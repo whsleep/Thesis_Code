@@ -1,2 +1,6 @@
 # Thesis_Code
-Experimental Component of Thesis.
+
+大论文对应的实验部分
+
+## 动态静态点云区分
+
