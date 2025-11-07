@@ -59,11 +59,11 @@ class SIM_ENV:
         # 使用tolist()方法保持二维结构 [[x1,y1], [x2,y2], ...]
         if len(static_points) > 0:
             static_points_list = static_points.tolist()  # 转换为列表格式
-            self.env.draw_points(points=static_points_list, s=20, c='blue', refresh=True, alpha=0.6)
+            self.env.draw_points(points=static_points_list, s=10, c='blue', refresh=True, alpha=0.6)
         
         # 2. 叠加绘制动态点云（红色，较大，不清除静态点云）
         if len(dynamic_points) > 0:
             dynamic_points_list = dynamic_points.tolist()  # 转换为列表格式
-            self.env.draw_points(points=dynamic_points_list, s=40, c='red', refresh=True, alpha=0.8)
+            self.env.draw_points(points=dynamic_points_list, s=20, c='red', refresh=True, alpha=0.8)
 
 

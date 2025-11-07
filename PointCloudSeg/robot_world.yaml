@@ -6,8 +6,6 @@ world:
   offset: [0, 0]
   collision_mode: 'stop'  # 'stop', 'unobstructed', 'reactive'
   control_mode: 'auto'  # 'keyboard', 'auto'
-  # obstacle_map: 'cave.png'
-  # mdownsample: 2
 
 robot:
   - kinematics: {name: 'diff'} 
@@ -23,7 +21,7 @@ robot:
         range_min: 0
         range_max: 6
         angle_range: 6.28
-        number: 100
+        number: 200
         noise: False
         std: 0.02
         angle_std: 0.05
