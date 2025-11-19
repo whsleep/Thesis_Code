@@ -11,7 +11,7 @@ class DynamicPointCloudProcessor:
     采用 DBSCAN 聚类，然后基于簇的平均速度进行动静态区分，提高鲁棒性。
     """
     
-    def __init__(self, range_min: float = 0, range_max: float = 5.95, 
+    def __init__(self, range_min: float = 0, range_max: float = 5.8, 
                  static_velocity_threshold: float = 0.1,
                  dbscan_eps: float = 0.25,  # DBSCAN 邻域半径 (例如 0.5米)
                  dbscan_min_samples: int = 3):  # 构成核心点的最小样本数
