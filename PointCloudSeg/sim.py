@@ -34,7 +34,11 @@ class SIM_ENV:
 
         # 处理点云，分离动态和静态点
         point_cloud_result = self.dpcp.process(scan_data, robot_state)
-        self.visualize_dynamic_static_points(point_cloud_result)
+        clusters = self.dpcp.cluster_dynamic_points(point_cloud_result['dynamic_points'])
+        box_list = self.dpcp.get_cluster_boxes(clusters)
+        for box_vertex in box_list:
+            self.env.draw_box(vertex=box_vertex, refresh=True, color="-r")
+        # self.visualize_dynamic_static_points(point_cloud_result)
 
         # 是否抵达
         if self.env.robot.arrive:

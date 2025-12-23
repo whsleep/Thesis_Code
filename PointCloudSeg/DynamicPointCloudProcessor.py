@@ -154,5 +154,71 @@ class DynamicPointCloudProcessor:
         
         return {'static_points': static_points, 'dynamic_points': foreground_pts}
 
+    def cluster_dynamic_points(self, dynamic_pts, d_th=0.3, min_pts=2):
+        """
+        按照论文思路对动态点进行聚类
+        :param dynamic_pts: N x 2 的动态点坐标
+        :param d_th: 聚类距离阈值 (论文中可根据距离 r 动态计算)
+        :param min_pts: 形成簇的最小点数
+        """
+        if len(dynamic_pts) < min_pts:
+            return []
+
+        # 1. 构建 KDTree 加速搜索
+        tree = KDTree(dynamic_pts)
+        
+        # 2. 找到每个点的邻居索引
+        # query_ball_point 会返回每个点在 d_th 范围内的点索引列表
+        adj_list = tree.query_ball_point(dynamic_pts, d_th)
+        
+        # 3. 使用深度优先搜索 (DFS) 或 Breadth-First 标记连通分量
+        clusters = []
+        visited = np.zeros(len(dynamic_pts), dtype=bool)
+        
+        for i in range(len(dynamic_pts)):
+            if not visited[i]:
+                # 开始一个新的簇
+                new_cluster_indices = []
+                stack = [i]
+                visited[i] = True
+                
+                while stack:
+                    curr = stack.pop()
+                    new_cluster_indices.append(curr)
+                    for neighbor in adj_list[curr]:
+                        if not visited[neighbor]:
+                            visited[neighbor] = True
+                            stack.append(neighbor)
+                
+                # 4. 过滤小噪声点簇
+                if len(new_cluster_indices) >= min_pts:
+                    clusters.append(dynamic_pts[new_cluster_indices])
+                    
+        return clusters
+
+    def get_cluster_boxes(self, clusters):
+        """
+        计算每个点簇的 AABB 包围盒顶点
+        Args:
+            clusters: 包含多个 (N, 2) 点阵的列表
+        Returns:
+            box_vertices: 包含多个 (2, 5) 顶点矩阵的列表
+        """
+        box_list = []
+        for cluster in clusters:
+            # 1. 寻找点簇在 X 和 Y 轴上的极值
+            x_min, y_min = np.min(cluster, axis=0)
+            x_max, y_max = np.max(cluster, axis=0)
+            
+            # 2. 构建 5 个顶点 (闭合矩形：左下-右下-右上-左上-左下)
+            # 形状为 (2, 5) 以符合 irsim 的 draw_box 要求
+            vertex = np.array([
+                [x_min, x_max, x_max, x_min, x_min],
+                [y_min, y_min, y_max, y_max, y_min]
+            ])
+            box_list.append(vertex)
+            
+        return box_list
+
     def _empty_res(self):
         return {'static_points': np.zeros((0,2)), 'dynamic_points': np.zeros((0,2))}
