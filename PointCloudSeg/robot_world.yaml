@@ -23,7 +23,7 @@ robot:
         range_min: 0
         range_max: 6
         angle_range: 6.28
-        number: 100
+        number: 360
         noise: true
         std: 0.02
         angle_std: 0.05
@@ -35,7 +35,7 @@ robot:
       show_goal: False
 
 obstacle:
-  - number: 10
+  - number: 8
     kinematics: {name: 'omni'}
     distribution: {name: 'random', range_low: [5.0, 5.0, -3.14], range_high: [15.0, 15.0, 3.14]}
     behavior: {name: 'rvo', wander: True, range_low: [1.5, 1.5, -3.14], range_high: [8.5, 8.5, 3.14], vxmax: 0.8, vymax: 0.8, factor: 1.0}
@@ -43,5 +43,5 @@ obstacle:
     vel_min: [-0.8, -0.8]
     shape:
     shape:
-      - {name: 'circle', radius: 0.6, random_shape: False}
+      - {name: 'circle', radius: 0.4, random_shape: False}
       # - {name: 'polygon', random_shape: true, avg_radius_range: [0.2, 0.3], irregularity_range: [0, 0.2], spikeyness_range: [0, 0.2], num_vertices_range: [4, 6]}

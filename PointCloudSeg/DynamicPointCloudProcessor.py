@@ -3,6 +3,9 @@ from scipy import ndimage
 from scipy.spatial import cKDTree as KDTree
 from numba import njit, prange
 
+import cv2
+from sklearn.cluster import DBSCAN
+
 @njit(parallel=True)
 def fast_process_logic(local_pts, tx, ty, theta, map_res, h_max, w_max, sdf_map, dist_threshold):
     """
@@ -27,38 +30,45 @@ def fast_process_logic(local_pts, tx, ty, theta, map_res, h_max, w_max, sdf_map,
         
         # 3. 边界检查与 SDF 查询
         if 0 <= ix < w_max and 0 <= iy < h_max:
-            # 注意：此处索引需与标准化 grid 的存储顺序一致 (通常为 grid[row, col])
-            # 在 set_map 中我们确保了坐标与索引的映射关系
             dist_to_static = sdf_map[ix, iy] 
-            alpha[i] = 0.8 if dist_to_static <= dist_threshold else 0.2
+            alpha[i] = 0.7 if dist_to_static <= dist_threshold else 0.3
         else:
-            alpha[i] = 0.2
+            alpha[i] = 0.3
             
     return global_pts, alpha
 
 class DynamicPointCloudProcessor:
-    def __init__(self, v_threshold=0.1, dt=0.1, alpha_weight=0.8, beta_weight=0.2):
+    def __init__(self, v_threshold=0.1, dt=0.1, alpha_weight=0.6, beta_weight=0.4):
+        # 速度阈值：超出会增加动态概率
         self.v_threshold = v_threshold
+        # 时间间隔
         self.dt = dt
+        # SDF判据权重
         self.alpha_weight = alpha_weight
+        # 速度判据权重
         self.beta_weight = beta_weight
-        
+        # 预计算 SDF 地图
         self.sdf_map = None
+        # 地图参数
         self.map_res = 0.1
         self.map_width_m = 10.0
         self.map_height_m = 10.0
+        # 上一帧点云的 KDTree
         self.prev_kdtree = None
+        # 障碍物ID计数器（用于唯一标识每个障碍物）
+        self.obstacle_id_counter = 0
 
     def set_map(self, map_obj):
         """
         1. 保持自适应尺寸调整
         2. 预计算 SDF
         """
+        # 获取地图预设参数
         self.map_res = map_obj.resolution
         self.map_width_m = map_obj.width
         self.map_height_m = map_obj.height
         
-        # --- 步骤 1: 尺寸标准化 (Resampling) ---
+        # --- 尺寸标准化 (Resampling) ---
         target_h = int(self.map_height_m / self.map_res)
         target_w = int(self.map_width_m / self.map_res)
         current_h, current_w = map_obj.grid.shape
@@ -70,7 +80,7 @@ class DynamicPointCloudProcessor:
         else:
             standardized_grid = map_obj.grid.copy()
 
-        # --- 步骤 2: 生成 SDF 距离场 ---
+        # --- 生成 SDF 距离场 ---
         # 提取静态障碍物 (100)
         static_binary = (standardized_grid == 100).astype(np.uint8)
         
@@ -83,46 +93,24 @@ class DynamicPointCloudProcessor:
         self.sdf_map = pixel_dist_map * self.map_res
         self.h_max, self.w_max = self.sdf_map.shape
 
-        # --- 新增：对比可视化调试 ---
-        # self._visualize_sdf_comparison(standardized_grid, self.sdf_map)
-
-    def _visualize_sdf_comparison(self, original_grid, sdf_map):
-        import matplotlib.pyplot as plt
-        
-        plt.figure(figsize=(12, 5))
-        
-        # 左图：原始标准化栅格地图
-        plt.subplot(1, 2, 1)
-        plt.title("Standardized Grid (Original)")
-        plt.imshow(original_grid, origin='lower', cmap='gray_r')
-        plt.colorbar(label='Occupancy Value')
-        
-        # 右图：计算出的 SDF 距离场
-        plt.subplot(1, 2, 2)
-        plt.title("SDF (Distance to Obstacles)")
-        # 使用 'viridis' 或 'jet' 色带可以更清晰地看出距离梯度
-        plt.imshow(sdf_map, origin='lower', cmap='viridis')
-        plt.colorbar(label='Distance (meters)')
-        
-        plt.tight_layout()
-        plt.show()
-
-    def _radius_outlier_removal(self, points, r=0.2, min_pts=5):
-        if len(points) < min_pts: return np.zeros((0, 2))
-        tree = KDTree(points)
-        counts = tree.query_ball_point(points, r, return_length=True)
-        return points[counts >= min_pts]
-
     def process(self, scan_data, robot_state):
-        # 雷达数据预处理
+        """
+        雷达数据预处理
+        输出接口修改：返回结构化的障碍物列表，每个障碍物包含独立点云、矩形参数、ID等信息
+        """
+        # 点云极坐标长度
         ranges = np.array(scan_data['ranges'])
+        # 点云极坐标角度
         angles = scan_data['angle_min'] + np.arange(len(ranges)) * scan_data['angle_increment']
+        # 筛选指定范围点云
         mask = (ranges > 0.1) & (ranges < 5.8)
+        # 雷达坐标系下点云集合
         local_pts = np.column_stack((
             ranges[mask] * np.cos(angles[mask]),
             ranges[mask] * np.sin(angles[mask])
         ))
 
+        # 获取有效点云数量
         num_points = len(local_pts)
         if num_points == 0: return self._empty_res()
 
@@ -131,94 +119,136 @@ class DynamicPointCloudProcessor:
         global_pts, alpha = fast_process_logic(
             local_pts, tx, ty, theta, 
             self.map_res, self.h_max, self.w_max, 
-            self.sdf_map, dist_threshold=0.3
+            self.sdf_map, dist_threshold=0.2
         )
 
         # 速度判据 (Beta)
-        beta = np.full(num_points, 0.3)
+        beta = np.full(num_points, 0.05)
         if self.prev_kdtree is not None:
             dists, _ = self.prev_kdtree.query(global_pts, k=1)
             avg_vel = dists / self.dt
-            beta = np.where( avg_vel < self.v_threshold, 0.7, 0.3)
+            beta = np.where( avg_vel < self.v_threshold, 0.95, 0.05)
 
-        # 融合与分类 0.2*0.8 + 0.3*0.2=0.22
+        # 融合与分类 四种情况
         confidence_C = alpha * self.alpha_weight + beta * self.beta_weight
 
-        is_static = confidence_C >= 0.3
+        # 静态/动态点云划分
+        is_static = confidence_C >= 0.43
         static_points = global_pts[is_static]
         foreground_pts = global_pts[~is_static]
+        # 保存每个前景点的置信度（用于后续筛选）
+        foreground_confidence = confidence_C[~is_static]
 
-        # 滤波
-        # dynamic_points = self._radius_outlier_removal(foreground_pts)
+        # 保存上一帧KDtree
         self.prev_kdtree = KDTree(global_pts)
         
-        return {'static_points': static_points, 'dynamic_points': foreground_pts}
-
-    def cluster_dynamic_points(self, dynamic_pts, d_th=0.3, min_pts=2):
-        """
-        按照论文思路对动态点进行聚类
-        :param dynamic_pts: N x 2 的动态点坐标
-        :param d_th: 聚类距离阈值 (论文中可根据距离 r 动态计算)
-        :param min_pts: 形成簇的最小点数
-        """
-        if len(dynamic_pts) < min_pts:
-            return []
-
-        # 1. 构建 KDTree 加速搜索
-        tree = KDTree(dynamic_pts)
+        # 调用矩形拟合：返回每个障碍物的独立信息
+        obstacles = self.scan_rectangle(foreground_pts, foreground_confidence)
         
-        # 2. 找到每个点的邻居索引
-        # query_ball_point 会返回每个点在 d_th 范围内的点索引列表
-        adj_list = tree.query_ball_point(dynamic_pts, d_th)
-        
-        # 3. 使用深度优先搜索 (DFS) 或 Breadth-First 标记连通分量
-        clusters = []
-        visited = np.zeros(len(dynamic_pts), dtype=bool)
-        
-        for i in range(len(dynamic_pts)):
-            if not visited[i]:
-                # 开始一个新的簇
-                new_cluster_indices = []
-                stack = [i]
-                visited[i] = True
-                
-                while stack:
-                    curr = stack.pop()
-                    new_cluster_indices.append(curr)
-                    for neighbor in adj_list[curr]:
-                        if not visited[neighbor]:
-                            visited[neighbor] = True
-                            stack.append(neighbor)
-                
-                # 4. 过滤小噪声点簇
-                if len(new_cluster_indices) >= min_pts:
-                    clusters.append(dynamic_pts[new_cluster_indices])
-                    
-        return clusters
-
-    def get_cluster_boxes(self, clusters):
-        """
-        计算每个点簇的 AABB 包围盒顶点
-        Args:
-            clusters: 包含多个 (N, 2) 点阵的列表
-        Returns:
-            box_vertices: 包含多个 (2, 5) 顶点矩阵的列表
-        """
-        box_list = []
-        for cluster in clusters:
-            # 1. 寻找点簇在 X 和 Y 轴上的极值
-            x_min, y_min = np.min(cluster, axis=0)
-            x_max, y_max = np.max(cluster, axis=0)
+        # 构造输出结果（结构化接口）
+        output = {
+            # 全局点云数据（兼容原有接口）
+            'static_points': static_points,       # 全局静态点云 (N, 2)
+            'dynamic_points': foreground_pts,    # 全局前景点云 (M, 2)
             
-            # 2. 构建 5 个顶点 (闭合矩形：左下-右下-右上-左上-左下)
-            # 形状为 (2, 5) 以符合 irsim 的 draw_box 要求
-            vertex = np.array([
-                [x_min, x_max, x_max, x_min, x_min],
-                [y_min, y_min, y_max, y_max, y_min]
-            ])
-            box_list.append(vertex)
+            # 结构化障碍物列表（新增核心接口）
+            'obstacles': obstacles,              # 列表：每个元素是一个障碍物的完整信息
+            'obstacle_count': len(obstacles),    # 障碍物总数
             
-        return box_list
+            # 原有接口字段（保留，确保向后兼容）
+            'centers': [obs['rect_params'][0:2] for obs in obstacles],  # 所有障碍物中心 (cx, cy)
+            'boxes': [obs['box'] for obs in obstacles]                  # 所有障碍物矩形顶点
+        }
+        
+        return output
+        
+    def scan_rectangle(self, foreground_pts, foreground_confidence):
+        """
+        输入: 
+            foreground_pts: 全局坐标系下的前景点云 (M, 2)
+            foreground_confidence: 前景点云的动态置信度 (M,)
+        输出: 
+            obstacles: 结构化障碍物列表，每个元素包含：
+                {
+                    'obstacle_id': int,          # 唯一障碍物ID
+                    'cluster_pts': np.ndarray,   # 该障碍物的点云簇 (K, 2)
+                    'rect_params': list,         # 矩形参数 [cx, cy, w, h, angle_rad]
+                    'box': np.ndarray,           # 矩形4个顶点 (2, 4)
+                    'confidence': float,         # 障碍物动态置信度（簇内点均值）
+                    'point_count': int           # 该障碍物的点云数量
+                }
+        """
+        obstacles = []
+
+        # 1. 基础过滤：前景点云数量过少
+        if len(foreground_pts) < 3:
+            return obstacles
+
+        # 2. 使用 DBSCAN 聚类
+        labels = DBSCAN(eps=0.2, min_samples=3).fit_predict(foreground_pts)
+
+        # 3. 遍历每个有效簇（排除噪声）
+        for label in np.unique(labels):
+            if label == -1:  # 噪声点，跳过
+                continue
+            
+            # 提取当前簇的点云和置信度
+            cluster_mask = (labels == label)
+            cluster_pts = foreground_pts[cluster_mask].astype(np.float32)
+            cluster_confidence = foreground_confidence[cluster_mask]
+            
+            # 过滤点数过少的小簇
+            if len(cluster_pts) < 3:
+                continue
+            
+            try:
+                # 4. 计算最小外接矩形
+                rect = cv2.minAreaRect(cluster_pts)
+                (cx, cy), (w, h), angle_deg = rect
+                angle_rad = np.deg2rad(angle_deg)
+                
+                # 5. 生成矩形4个顶点（形状：2x4，便于可视化）
+                box = cv2.boxPoints(rect).T  # (2, 4)：每行x/y坐标，每列一个顶点
+                
+                # 6. 计算该障碍物的动态置信度（簇内点置信度均值）
+                avg_confidence = np.mean(cluster_confidence)
+                
+                # 7. 构造单个障碍物信息
+                obstacle = {
+                    'obstacle_id': self._get_next_obstacle_id(),
+                    'cluster_pts': cluster_pts,
+                    'rect_params': [cx, cy, w, h, angle_rad],
+                    'box': box,
+                    'confidence': avg_confidence,
+                    'point_count': len(cluster_pts)
+                }
+                
+                obstacles.append(obstacle)
+                
+            except Exception as e:
+                print(f"Warning: 处理障碍物簇时出错 - {str(e)}")
+                continue
+
+        return obstacles
+    
+    def _get_next_obstacle_id(self):
+        """生成唯一的障碍物ID（自增）"""
+        current_id = self.obstacle_id_counter
+        self.obstacle_id_counter += 1
+        # 防止ID溢出（可选：达到最大值后重置）
+        if self.obstacle_id_counter >= 1000000:
+            self.obstacle_id_counter = 0
+        return current_id
 
     def _empty_res(self):
-        return {'static_points': np.zeros((0,2)), 'dynamic_points': np.zeros((0,2))}
+        """空结果返回（保持接口一致性）"""
+        return {
+            'static_points': np.zeros((0, 2)),
+            'dynamic_points': np.zeros((0, 2)),
+            'obstacles': [],
+            'obstacle_count': 0,
+            'centers': [],
+            'boxes': []
+        }
+    
+    
