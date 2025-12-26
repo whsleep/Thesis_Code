@@ -5,7 +5,7 @@ import warnings
 warnings.filterwarnings('ignore')  # 屏蔽除以0等警告
 
 # ===================== 核心参数配置 =====================
-N_MC = 100000        # 蒙特卡罗实验次数
+N_MC = 10000        # 蒙特卡罗实验次数
 T = 0.1             # 状态转移时间差 (s)
 omega_fixed = 0.1   # 固定角速度 (rad/s)
 theta0 = np.pi/4    # 初始方位角 (rad)
@@ -44,8 +44,8 @@ def ct_cc_transition(x_prev, omega, T):
         dy_new = dy
     else:
         # CT-CC 转移公式
-        x_new = x + (dx/omega)*np.sin(omega*T) - (dy/omega)*(1 - np.cos(omega*T))
-        y_new = y + (dy/omega)*np.sin(omega*T) + (dx/omega)*(1 - np.cos(omega*T))
+        x_new = x + (dx/omega)*np.sin(omega*T/2) - (dy/omega)*(1 - np.cos(omega*T))
+        y_new = y + (dy/omega)*np.sin(omega*T/2) + (dx/omega)*(1 - np.cos(omega*T))
         dx_new = dx * np.cos(omega*T) - dy * np.sin(omega*T)
         dy_new = dx * np.sin(omega*T) + dy * np.cos(omega*T)
     return np.array([x_new, y_new, dx_new, dy_new, omega])

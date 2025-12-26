@@ -1,217 +1,153 @@
 import numpy as np
 import matplotlib.pyplot as plt
-from scipy import stats
-import warnings
-warnings.filterwarnings('ignore')  # 屏蔽除以0等警告
+from scipy.stats import norm
 
-# ===================== 核心参数配置 =====================
-N_MC = 100000        # 蒙特卡罗实验次数
-T = 0.1             # 状态转移时间差 (s)
-v_fixed = 10        # 固定线速度 (m/s) （论文图1c/d设定为10m/s）
-theta0 = np.pi/4    # 初始方位角 (rad)
+# ====================== 核心参数设置 ======================
+np.random.seed(42)
+T = 0.1  # 时间步
+theta0 = np.pi/4  # 初始方位角
+v0 = 10.0  # 固定线速度
+sigma_theta, sigma_v, sigma_omega = 0.1, 0.3, 0.1  # 噪声标准差
+num_trials = 100000  # 蒙特卡罗次数
+omega_list = np.logspace(np.log10(0.01), np.log10(20), 100)  # 角速度对数序列
+dot_x0_true, dot_y0_true = v0*np.cos(theta0), v0*np.sin(theta0)  # 无噪声真实初始速度
 
-# 噪声标准差（与论文一致）
-sigma_theta = 0.1   # 方位角噪声 (rad)
-sigma_v = 0.3       # 线速度噪声 (m/s)
-sigma_omega = 0.1   # 角速度噪声 (rad/s)
-
-# 角速度变化范围：0.01~20 rad/s（对数刻度采样，避免低速点稀疏）
-omega_list = np.logspace(np.log10(0.01), np.log10(20), 50)  # 从0.01开始避免纯零
-
-# 结果存储数组（CT-CC/CT-PC 分别存储位置/方位角误差的中位数、10%、90%分位数）
-# CT-CC 结果
-cc_pos_med, cc_pos_10, cc_pos_90 = [], [], []
-cc_theta_med, cc_theta_10, cc_theta_90 = [], [], []
-
-# CT-PC 结果
-pc_pos_med, pc_pos_10, pc_pos_90 = [], [], []
-pc_theta_med, pc_theta_10, pc_theta_90 = [], [], []
-
-# ===================== 运动模型定义（保持不变） =====================
-def ct_cc_transition(x_prev, omega, T):
-    """
-    CT-CC 状态转移函数（笛卡尔坐标系协调转弯）
-    x_prev: 前一状态 [x, y, dx, dy, omega]
-    omega: 角速度 (rad/s)
-    T: 时间差 (s)
-    返回：预测状态
-    """
-    x, y, dx, dy, _ = x_prev
-    if np.abs(omega) < 1e-8:  # 角速度接近0时退化到CV模型
-        x_new = x + dx * T
-        y_new = y + dy * T
-        dx_new = dx
-        dy_new = dy
-    else:
-        # CT-CC 转移公式
-        x_new = x + (dx/omega)*np.sin(omega*T) - (dy/omega)*(1 - np.cos(omega*T))
-        y_new = y + (dy/omega)*np.sin(omega*T) + (dx/omega)*(1 - np.cos(omega*T))
-        dx_new = dx * np.cos(omega*T) - dy * np.sin(omega*T)
-        dy_new = dx * np.sin(omega*T) + dy * np.cos(omega*T)
-    return np.array([x_new, y_new, dx_new, dy_new, omega])
-
-def ct_pc_transition(x_prev, T):
-    """
-    CT-PC 状态转移函数（极坐标系协调转弯）
-    x_prev: 前一状态 [x, y, theta, v, omega]
-    T: 时间差 (s)
-    返回：预测状态
-    """
-    x, y, theta, v, omega = x_prev
-    if np.abs(omega) < 1e-8:  # 角速度接近0时退化到CV模型
-        x_new = x + v * np.cos(theta) * T
-        y_new = y + v * np.sin(theta) * T
-        theta_new = theta
-    else:
-        # CT-PC 转移公式
-        x_new = x + (2*v/omega) * np.sin(omega*T/2) * np.cos(theta + omega*T/2)
-        y_new = y + (2*v/omega) * np.sin(omega*T/2) * np.sin(theta + omega*T/2)
-        theta_new = theta + omega * T
-    return np.array([x_new, y_new, theta_new, v, omega])
-
-# ===================== 蒙特卡罗仿真（核心修改部分） =====================
-for omega in omega_list:
-    print(f"正在计算角速度: {omega:.4f} rad/s")
-
-    # -------------------- 初始状态初始化 --------------------
-    # 初始位置固定为(0,0)
-    # CT-CC 初始状态 [x, y, dx, dy, omega]
-    dx0 = v_fixed * np.cos(theta0)  # 固定线速度推导x方向速度
-    dy0 = v_fixed * np.sin(theta0)  # 固定线速度推导y方向速度
-    x0_cc = np.array([0.0, 0.0, dx0, dy0, omega])  # 角速度随循环变化
+# ====================== 向量优化的预测函数 ======================
+def ct_pc_predict_vec(omega_noise, theta_noise, v_noise, T, x0=0, y0=0):
+    """CT-PC模型向量预测（批量处理，含theta/v噪声注入）"""
+    omega_k = omega_noise
+    theta = theta_noise + omega_k * T  # 注入初始方位角噪声
+    v = v_noise  # 注入线速度噪声
+    mask = np.abs(omega_k) > 1e-6  # 避免除零
     
-    # CT-PC 初始状态 [x, y, theta, v, omega]
-    x0_pc = np.array([0.0, 0.0, theta0, v_fixed, omega])  # 固定线速度，角速度随循环变化
+    # 初始化预测位置（退化到CV模型）
+    x_pre = np.full_like(omega_k, x0 + v * T * np.cos(theta_noise))
+    y_pre = np.full_like(omega_k, y0 + v * T * np.sin(theta_noise))
     
-    # -------- 计算无噪声的真实状态（理想预测结果） --------
-    # 真实的CT-CC预测位置（无噪声）
-    x_true_cc = ct_cc_transition(x0_cc, omega, T)
-    true_pos_cc = (x_true_cc[0], x_true_cc[1])  # 真实位置
-    # true_pos_cc = (0.0, 0.0)  # 真实位置
-    true_theta_cc = theta0  # 真实方位角
+    # 非零角速度时的计算
+    x_pre[mask] = x0 + (2*v[mask]/omega_k[mask]) * np.sin(omega_k[mask]*T/2) * np.cos(theta[mask])
+    y_pre[mask] = y0 + (2*v[mask]/omega_k[mask]) * np.sin(omega_k[mask]*T/2) * np.sin(theta[mask])
     
-    # 真实的CT-PC预测位置（无噪声）
-    x_true_pc = ct_pc_transition(x0_pc, T)
-    true_pos_pc = (x_true_pc[0], x_true_pc[1])  # 真实位置
-    # true_pos_pc = (0.0, 0.0)  # 真实位置
-    true_theta_pc = x_true_pc[2]  # 真实方位角
+    return x_pre, y_pre, theta
+
+def ct_cc_predict_vec(omega_noise, dot_x_noisy, dot_y_noisy, T, x0=0, y0=0):
+    """CT-CC模型向量预测（批量处理，接收带噪初始速度）"""
+    omega_k = omega_noise
+    mask = np.abs(omega_k) > 1e-6
     
-    # -------------------- 生成噪声 --------------------
-    # CT-CC 噪声：dx/dy噪声（与v噪声等价） + omega噪声
-    noise_dx = np.random.normal(0, sigma_v * np.cos(theta0), N_MC)
-    noise_dy = np.random.normal(0, sigma_v * np.sin(theta0), N_MC)
-    noise_omega_cc = np.random.normal(0, sigma_omega, N_MC)
+    # 初始化预测位置和速度（用带噪初始速度）
+    x_pre = np.full_like(omega_k, x0 + dot_x_noisy*T)
+    y_pre = np.full_like(omega_k, y0 + dot_y_noisy*T)
+    dot_x_pre = np.full_like(omega_k, dot_x_noisy)
+    dot_y_pre = np.full_like(omega_k, dot_y_noisy)
     
-    # CT-PC 噪声：v噪声 + omega噪声 + 初始theta噪声
-    noise_v = np.random.normal(0, sigma_v, N_MC)
-    noise_omega_pc = np.random.normal(0, sigma_omega, N_MC)
-    noise_theta = np.random.normal(0, sigma_theta, N_MC)
+    # 非零角速度时的计算
+    cos_wt = np.cos(omega_k[mask]*T)
+    sin_wt = np.sin(omega_k[mask]*T)
+    x_pre[mask] = x0 + (dot_x_noisy[mask]/omega_k[mask])*sin_wt - (dot_y_noisy[mask]/omega_k[mask])*(1 - cos_wt)
+    y_pre[mask] = y0 + (dot_y_noisy[mask]/omega_k[mask])*sin_wt + (dot_x_noisy[mask]/omega_k[mask])*(1 - cos_wt)
+    dot_x_pre[mask] = dot_x_noisy[mask]*cos_wt - dot_y_noisy[mask]*sin_wt
+    dot_y_pre[mask] = dot_x_noisy[mask]*sin_wt + dot_y_noisy[mask]*cos_wt
     
-    # -------------------- CT-CC 模型预测与误差计算 --------------------
-    cc_pos_errors = []  # 位置误差（欧氏距离）
-    cc_theta_errors = []# 方位角误差（归一化到[0,π]）
+    return x_pre, y_pre, dot_x_pre, dot_y_pre
+
+# ====================== 蒙特卡罗模拟（完善CT-CC噪声注入）======================
+def compute_errors():
+    ctpc_pos_stats = np.zeros((3, len(omega_list)))  # 中位数, q10, q90
+    ctcc_pos_stats = np.zeros((3, len(omega_list)))
+    ctpc_theta_stats = np.zeros((3, len(omega_list)))
+    ctcc_theta_stats = np.zeros((3, len(omega_list)))
     
-    for i in range(N_MC):
-        # 注入噪声的初始状态
-        x0_noisy = x0_cc.copy()
-        x0_noisy[2] += noise_dx[i]    # dx噪声
-        x0_noisy[3] += noise_dy[i]    # dy噪声
-        x0_noisy[4] += noise_omega_cc[i]  # omega噪声
+    for idx, omega in enumerate(omega_list):
+        print(f"正在计算角速度: {omega:.4f} rad/s")
+        # 生成批量噪声样本（所有样本形状均为 (num_trials,)）
+        theta_noise = norm.rvs(theta0, sigma_theta, num_trials)  # θ噪声
+        v_noise = norm.rvs(v0, sigma_v, num_trials)              # v噪声
+        omega_noise = norm.rvs(omega, sigma_omega, num_trials)    # ω噪声
         
-        # 状态预测（使用带噪声的角速度）
-        x_pred = ct_cc_transition(x0_noisy, x0_noisy[4], T)
+        # ---------------------- CT-CC 计算 ----------------------
+        # 1. 由v和θ的噪声推导带噪初始速度（符合非完整约束）
+        dot_x_noisy = v_noise * np.cos(np.random.normal(0, sigma_theta, num_trials) + theta0)
+        dot_y_noisy = v_noise * np.sin(np.random.normal(0, sigma_theta, num_trials) + theta0)
         
-        # 计算预测位置与真实位置的误差
-        pos_error = np.sqrt((x_pred[0] - true_pos_cc[0])**2 + (x_pred[1] - true_pos_cc[1])**2)
-        cc_pos_errors.append(pos_error)
+        # 2. 理想位置（无噪声）
+        ideal_x_cc = np.where(abs(omega)>1e-6,
+                             0 + (dot_x0_true/omega)*np.sin(omega*T) - (dot_y0_true/omega)*(1-np.cos(omega*T)),
+                             0 + dot_x0_true*T)
+        ideal_y_cc = np.where(abs(omega)>1e-6,
+                             0 + (dot_y0_true/omega)*np.sin(omega*T) + (dot_x0_true/omega)*(1-np.cos(omega*T)),
+                             0 + dot_y0_true*T)
+        ideal_theta_cc = np.arctan2(dot_y0_true, dot_x0_true)
         
-        # 方位角误差计算
-        if np.abs(x_pred[2]) < 1e-10 and np.abs(x_pred[3]) < 1e-10:
-            pred_theta = true_theta_cc  # 速度为0时避免arctan2报错
-        else:
-            pred_theta = np.arctan2(x_pred[3], x_pred[2])
-        theta_error = np.abs(pred_theta - true_theta_cc)
-        theta_error = np.min([theta_error, 2*np.pi - theta_error])  # 归一化到[0,π]
-        cc_theta_errors.append(theta_error)
+        # 3. 预测位置（注入初始速度噪声+角速度噪声）
+        pred_x_cc, pred_y_cc, pred_dot_x_cc, pred_dot_y_cc = ct_cc_predict_vec(omega_noise, dot_x_noisy, dot_y_noisy, T)
+        # 位置误差
+        pos_err_cc = np.linalg.norm([pred_x_cc - ideal_x_cc, pred_y_cc - ideal_y_cc], axis=0)
+        # 方位角误差（从带噪速度分量推导）
+        pred_theta_cc = np.arctan2(pred_dot_y_cc, pred_dot_x_cc)
+        theta_err_cc = np.minimum(np.abs(pred_theta_cc - ideal_theta_cc), 2*np.pi - np.abs(pred_theta_cc - ideal_theta_cc))
+        
+        # ---------------------- CT-PC 计算 ----------------------
+        # 理想位置（无噪声）
+        ideal_theta_pc = theta0 + omega * T
+        ideal_x_pc = np.where(abs(omega)>1e-6,
+                             0 + (2*v0/omega)*np.sin(omega*T/2)*np.cos(ideal_theta_pc),
+                             0 + v0*T*np.cos(theta0))
+        ideal_y_pc = np.where(abs(omega)>1e-6,
+                             0 + (2*v0/omega)*np.sin(omega*T/2)*np.sin(ideal_theta_pc),
+                             0 + v0*T*np.sin(theta0))
+        
+        # 预测位置（注入theta/v/omega噪声）
+        pred_x_pc, pred_y_pc, pred_theta_pc = ct_pc_predict_vec(omega_noise, theta_noise, v_noise, T)
+        # 位置误差
+        pos_err_pc = np.linalg.norm([pred_x_pc - ideal_x_pc, pred_y_pc - ideal_y_pc], axis=0)
+        # 方位角误差
+        theta_err_pc = np.minimum(np.abs(pred_theta_pc - ideal_theta_pc), 2*np.pi - np.abs(pred_theta_pc - ideal_theta_pc))
+        
+        # ---------------------- 统计结果 ----------------------
+        for stats, err in zip([ctpc_pos_stats, ctpc_theta_stats, ctcc_pos_stats, ctcc_theta_stats],
+                             [pos_err_pc, theta_err_pc, pos_err_cc, theta_err_cc]):
+            stats[:, idx] = [np.median(err), np.percentile(err, 10), np.percentile(err, 90)]
     
-    # -------------------- CT-PC 模型预测与误差计算 --------------------
-    pc_pos_errors = []
-    pc_theta_errors = []
+    return ctpc_pos_stats, ctpc_theta_stats, ctcc_pos_stats, ctcc_theta_stats
+
+# ====================== 主流程执行 ======================
+if __name__ == "__main__":
+    # 计算误差统计（向量运算，速度高效）
+    ctpc_pos, ctpc_theta, ctcc_pos, ctcc_theta = compute_errors()
     
-    for i in range(N_MC):
-        # 注入噪声的初始状态
-        x0_noisy = x0_pc.copy()
-        x0_noisy[2] += noise_theta[i]   # theta噪声
-        x0_noisy[3] += noise_v[i]       # v噪声
-        x0_noisy[4] += noise_omega_pc[i]# omega噪声
-        
-        # 状态预测
-        x_pred = ct_pc_transition(x0_noisy, T)
-        
-        # 计算预测位置与真实位置的误差
-        pos_error = np.sqrt((x_pred[0] - true_pos_pc[0])**2 + (x_pred[1] - true_pos_pc[1])**2)
-        pc_pos_errors.append(pos_error)
-        
-        # 方位角误差计算
-        pred_theta = x_pred[2]
-        theta_error = np.abs(pred_theta - true_theta_pc)
-        theta_error = np.min([theta_error, 2*np.pi - theta_error])
-        pc_theta_errors.append(theta_error)
+    # 可视化（遵循参考代码风格）
+    plt.rcParams['font.size'] = 12
+    plt.rcParams['font.family'] = 'Times New Roman'
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6))
     
-    # -------------------- 误差分位数统计 --------------------
-    # CT-CC 统计
-    cc_pos_med.append(np.median(cc_pos_errors))
-    cc_pos_10.append(np.percentile(cc_pos_errors, 10))
-    cc_pos_90.append(np.percentile(cc_pos_errors, 90))
-    cc_theta_med.append(np.median(cc_theta_errors))
-    cc_theta_10.append(np.percentile(cc_theta_errors, 10))
-    cc_theta_90.append(np.percentile(cc_theta_errors, 90))
+    # 位置误差图
+    ax1.set_ylim(1e-3, 1)
+    ax1.set_xscale('log')
+    ax1.set_yscale('log')
+    ax1.plot(omega_list, ctcc_pos[0], 'b-', label='CT-CC (Median)', linewidth=2)
+    ax1.fill_between(omega_list, ctcc_pos[1], ctcc_pos[2], alpha=0.2, color='b', label='CT-CC (10%-90%)')
+    ax1.plot(omega_list, ctpc_pos[0], 'r-', label='CT-PC (Median)', linewidth=2)
+    ax1.fill_between(omega_list, ctpc_pos[1], ctpc_pos[2], alpha=0.2, color='r', label='CT-PC (10%-90%)')
+    ax1.set_xlabel('Angular Velocity (rad/s) [log]')
+    ax1.set_ylabel('Position Error (m) [log]')
+    ax1.set_title(f'Position Error (v={v0} m/s)')
+    ax1.legend(loc='upper left')
+    ax1.grid(True, which="both", ls="--")
     
-    # CT-PC 统计
-    pc_pos_med.append(np.median(pc_pos_errors))
-    pc_pos_10.append(np.percentile(pc_pos_errors, 10))
-    pc_pos_90.append(np.percentile(pc_pos_errors, 90))
-    pc_theta_med.append(np.median(pc_theta_errors))
-    pc_theta_10.append(np.percentile(pc_theta_errors, 10))
-    pc_theta_90.append(np.percentile(pc_theta_errors, 90))
+    # 方位角误差图
+    ax2.set_xscale('log')
+    ax2.set_yscale('log')
+    ax2.plot(omega_list, ctcc_theta[0], 'b-', label='CT-CC (Median)', linewidth=2)
+    ax2.fill_between(omega_list, ctcc_theta[1], ctcc_theta[2], alpha=0.2, color='b', label='CT-CC (10%-90%)')
+    ax2.plot(omega_list, ctpc_theta[0], 'r-', label='CT-PC (Median)', linewidth=2)
+    ax2.fill_between(omega_list, ctpc_theta[1], ctpc_theta[2], alpha=0.2, color='r', label='CT-PC (10%-90%)')
+    ax2.set_xlabel('Angular Velocity (rad/s) [log]')
+    ax2.set_ylabel('Angular Error (rad) [log]')
+    ax2.set_title(f'Angular Error (v={v0} m/s)')
+    ax2.legend(loc='upper left')
+    ax2.grid(True, which="both", ls="--")
 
-# ===================== 结果可视化（适配修改后的变量） =====================
-plt.rcParams['font.size'] = 12
-plt.rcParams['font.family'] = 'Times New Roman'
-fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6))
-
-# -------------------- 位置误差图（对数刻度） --------------------
-ax1.set_xscale('log')
-ax1.set_yscale('log')
-ax1.set_ylim(1e-3, 1)
-# CT-CC 位置误差
-ax1.plot(omega_list, cc_pos_med, 'b-', label='CT-CC (Median)', linewidth=2)
-ax1.fill_between(omega_list, cc_pos_10, cc_pos_90, color='b', alpha=0.2, label='CT-CC (10%-90%)')
-# CT-PC 位置误差
-ax1.plot(omega_list, pc_pos_med, 'r-', label='CT-PC (Median)', linewidth=2)
-ax1.fill_between(omega_list, pc_pos_10, pc_pos_90, color='r', alpha=0.2, label='CT-PC (10%-90%)')
-
-ax1.set_xlabel('Angular Velocity (rad/s) [log]')
-ax1.set_ylabel('Position Error (m) [log]')
-ax1.set_title(f'Position Error (v={v_fixed} m/s)')  # 标题显示固定线速度
-ax1.legend(loc='upper left')
-ax1.grid(True, which="both", ls="--")
-
-# -------------------- 方位角误差图（对数刻度） --------------------
-ax2.set_xscale('log')
-ax2.set_yscale('log')
-# CT-CC 方位角误差
-ax2.plot(omega_list, cc_theta_med, 'b-', label='CT-CC (Median)', linewidth=2)
-ax2.fill_between(omega_list, cc_theta_10, cc_theta_90, color='b', alpha=0.2, label='CT-CC (10%-90%)')
-# CT-PC 方位角误差
-ax2.plot(omega_list, pc_theta_med, 'r-', label='CT-PC (Median)', linewidth=2)
-ax2.fill_between(omega_list, pc_theta_10, pc_theta_90, color='r', alpha=0.2, label='CT-PC (10%-90%)')
-
-ax2.set_xlabel('Angular Velocity (rad/s) [log]')
-ax2.set_ylabel('Angular Error (rad) [log]')
-ax2.set_title(f'Angular Error (v={v_fixed} m/s)')  # 标题显示固定线速度
-ax2.legend(loc='upper left')
-ax2.grid(True, which="both", ls="--")
-
-plt.tight_layout()
-plt.show()
+    plt.tight_layout()
+    plt.show()
+    
