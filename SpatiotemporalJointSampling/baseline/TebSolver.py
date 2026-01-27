@@ -3,545 +3,310 @@ import numpy as np
 
 class TebplanSolver:
     """
-    简化的TEB局部路径规划器
-    仅保留最基本功能：固定步长，椭圆障碍物避障
+    自适应 TEB 规划器 (融合版 - 修复维度错误)
     """
     def __init__(self, 
                  ref_path: np.ndarray,
-                 delta_t: float = 0.1,
-                 n_teb_points: int = 20,
-                 safe_distance: float = 1.5,
-                 v_max: float = 10.0,
-                 omega_max: float = 3.0,
-                 a_max: float = 2.0,
-                 theta_max: float = 1.0,
-                 max_obstacles: int = 10,
-                 w_path: float = 0.5,
-                 w_velocity: float = 2.0,
-                 w_radius: float = 2.0,
-                 w_obs: float = 15.0,
-                 w_kin: float = 2.0,
-                 w_via_point: float = 5.0,
-                 w_goal: float = 3.0,
-                 lookahead_dist: float = 5.0,
-                 **kwargs):
+                 safe_distance: float = 1.0,  # 稍微调小默认安全距离
+                 v_max=3.0, omega_max=2.0, a_max=1.0, 
+                 lookahead_dist=5.0,
+                 # 权重参数
+                 w_p=0.5, w_t=2.0, w_kin=50.0, w_r=5.0, w_obs=20.0,w_goal=1.0, 
+                 T_min=0.1, T_max=0.4):
         
-        # 参考路径
+        # --- 1. 基础配置 ---
         self.ref_path = ref_path
-        # 固定仿真时间
-        self.delta_t = delta_t
-        # 固定长度
-        self.n_teb_points = n_teb_points
-        # 安全距离
-        self.safe_distance = safe_distance
-
-        # 运动学约束
-        self.v_max = v_max
-        self.omega_max = omega_max
-        self.a_max = a_max
-        self.theta_max = theta_max
-        self.max_obstacles = max_obstacles
-        self.r_min = 0.1  # 最小转弯半径
-
-        # 代价函数权重
-        self.w_path = w_path
-        self.w_velocity = w_velocity
-        self.w_radius = w_radius
-        self.w_obs = w_obs
-        self.w_kin = w_kin
-        self.w_via_point = w_via_point
-        self.w_goal = w_goal
-        self.num_via_points = 6
         self.lookahead_dist = lookahead_dist
         
         # 内部状态
         self.prev_idx = 0
-        self.end_idx = self.prev_idx
-        self.last_v = 0.0
-        self.last_w = 0.0
-        self.solver = None
-        self.last_opt_z = None
+        self.last_u = np.array([0.0, 0.0]) # [v, w]
+        
+        # --- 2. 优化参数 ---
+        self.safe_distance = safe_distance
+        self.v_max = v_max
+        self.omega_max = omega_max
+        self.r_min = 0.3
+        self.a_max = a_max
+        
+        self.w_p = w_p
+        self.w_t = w_t
+        self.w_kin = w_kin
+        self.w_r = w_r
+        self.w_obs = w_obs
+        self.w_goal = w_goal
+        
+        self.T_min = T_min
+        self.T_max = T_max
+        self.epsilon = 1e-4 # 避免除零
 
-        # 障碍列表
-        self.obstacles = []
+        # 动态变量
+        self.n = 0
+        self.trajectory = None
 
     def calc_control_input(self, observed_x: np.ndarray, obstacles: list = None):
-        """
-        计算控制量
-        """
-        if observed_x.ndim > 1:
-            observed_x = observed_x.flatten()
+        """MPC 风格接口"""
+        if observed_x.ndim > 1: observed_x = observed_x.flatten()
+        x0 = observed_x 
         
-        # 提取状态
-        x, y, theta = observed_x[0], observed_x[1], observed_x[2]
+        # 1. 获取局部目标
+        xf = self._get_local_goal_from_path(x0[0], x0[1])
         
-        # 获取局部目标点
-        local_goal = self._get_local_goal_from_path(x, y)
+        # 2. 自动计算 n (强制最小值为 3, 建议 5 以避免边缘效应)
+        self.n = self._auto_calculate_n(x0, xf)
         
-        # 求解轨迹
-        trajectory = self._solve_teb(observed_x, local_goal, obstacles)
-        
-        # 提取控制量
-        if trajectory is not None and len(trajectory) > 1:
-            x0, y0, th0 = trajectory[0]
-            x1, y1, th1 = trajectory[1]
-            
-            # 计算线速度
-            dx = x1 - x0
-            dy = y1 - y0
-            v = (dx * np.cos(th0) + dy * np.sin(th0)) / self.delta_t
-            v = np.clip(v, -self.v_max, self.v_max)
-            
-            # 计算角速度
-            dth = np.arctan2(np.sin(th1 - th0), np.cos(th1 - th0))
-            w = dth / self.delta_t
-            w = np.clip(w, -self.omega_max, self.omega_max)
-            
-            best_u = np.array([v, w])
-            self.last_v = v
-            self.last_w = w
-        else:
-            best_u = np.array([self.last_v, self.last_w])
-            trajectory = np.array([[x, y, theta]])
-        
-        # 返回格式兼容
-        sampled_trajs = np.zeros((1, 1, 3))
-        
-        return trajectory, sampled_trajs, best_u
-
-    def _get_local_goal_from_path(self, x, y):
-        """寻找前瞻点"""
-        # 限定搜索范围
-        search_range = 20
-        start_idx = max(0, self.prev_idx - 10)
-        end_idx = min(len(self.ref_path), start_idx + search_range)
-        # 提取局部路径
-        path_segment = self.ref_path[start_idx:end_idx]
-        if len(path_segment) == 0:
-            return self.ref_path[-1]
-        
-        # 找到最近点
-        dx = x - path_segment[:, 0]
-        dy = y - path_segment[:, 1]
-        dist_sq = dx**2 + dy**2
-        min_idx_local = np.argmin(dist_sq)
-        min_idx_global = start_idx + min_idx_local
-        self.prev_idx = min_idx_global
-        
-        # 寻找前瞻点
-        self.end_idx = min_idx_global
-        current_dist = 0.0
-        while self.end_idx < len(self.ref_path) - 1:
-            p1 = self.ref_path[self.end_idx]
-            p2 = self.ref_path[self.end_idx + 1]
-            d = np.hypot(p2[0] - p1[0], p2[1] - p1[1])
-            current_dist += d
-            if current_dist >= self.lookahead_dist:
-                break
-            self.end_idx += 1
-            
-        return self.ref_path[self.end_idx]
-
-    def _solve_teb(self, start_state, goal_state, obstacles):
-        """求解TEB轨迹"""
-        # 固定起点终点
-        x0 = start_state
-        xf = goal_state
-        
-        # 构建优化问题
-        if self.solver is None:
-            self.solver = self._build_solver()
-        
-        # 生成初始猜测
-        z0 = self._get_initial_guess(x0, xf)
-
-        # 提取路标点
-        via_indices = np.linspace(0, self.n_teb_points + 1, self.num_via_points + 2, dtype=int)[1:-1]
-        via_points_flat = []
-        n_vars = self.n_teb_points + 2
-        for idx in via_indices:
-            # z0 结构: [x_0...x_N, y_0...y_N, th_0...th_N]
-            v_x = z0[idx]
-            v_y = z0[n_vars + idx] # y 在 x 后面
-            via_points_flat.extend([v_x, v_y])
-
-        # 提取障碍物参数
-        # 每个障碍物有 7 个参数: cx, cy, a, b, dummy, cos_ot, sin_ot
-        obs_params = np.zeros(self.max_obstacles * 7)
-        
+        # 3. 障碍物预处理 (关键修复：确保是 2D 数组)
+        obs_np = np.array([])
         if obstacles is not None and len(obstacles) > 0:
-            obs_list = np.array(obstacles) # [M, 7]
-            
-            # 计算距离并排序，取最近的 N 个
-            dists = np.hypot(obs_list[:,0] - x0[0], obs_list[:,1] - x0[1])
-            sorted_indices = np.argsort(dists)
-            
-            count = min(len(obstacles), self.max_obstacles)
-            for i in range(count):
-                idx = sorted_indices[i]
-                # 填充到 flat 数组中
-                obs_params[i*7 : (i+1)*7] = obs_list[idx, :]
-            
-            # 对于剩余的空槽位，将障碍物移到无穷远，防止干扰
-            for i in range(count, self.max_obstacles):
-                obs_params[i*7] = 10000.0     # cx
-                obs_params[i*7+1] = 10000.0   # cy
-                obs_params[i*7+2] = 0.1       # a
-                obs_params[i*7+3] = 0.1       # b
-
-        p_val = np.concatenate([x0, xf, via_points_flat, obs_params])
+            obs_temp = np.array(obstacles)
+            # 如果输入是 [x,y,a,b...], ndim=1, 需要转为 [[x,y,a,b...]]
+            if obs_temp.ndim == 1:
+                obs_np = obs_temp.reshape(1, -1)
+            else:
+                obs_np = obs_temp
+        
         try:
-            # 求解
-            res = self.solver(
-                x0=z0, 
-                p=p_val, 
-                lbg=self.lbg, 
-                ubg=self.ubg
-                )
-
-            # 保存最后的最优解用于热启动
-            self.last_opt_z = res['x'].full().flatten()
+            # 4. 构建求解
+            res_dict = self._build_and_solve(x0, xf, obs_np)
             
-            # 提取轨迹
-            trajectory = self._extract_trajectory(res, x0, xf)
-            return trajectory
-        except:
-            # 失败时返回直线
-            n_points = self.n_teb_points + 2
-            t = np.linspace(0, 1, n_points)
-            x_traj = x0[0] + t * (xf[0] - x0[0])
-            y_traj = x0[1] + t * (xf[1] - x0[1])
-            theta_traj = x0[2] + t * (xf[2] - x0[2])
-            return np.column_stack([x_traj, y_traj, theta_traj])
+            # 5. 提取结果
+            traj, dt_seq = self._extract_trajectory(res_dict)
+            self.trajectory = traj
+            
+            # 6. 计算控制量
+            if len(traj) > 1 and len(dt_seq) > 0:
+                dx = traj[1,0] - traj[0,0]
+                dy = traj[1,1] - traj[0,1]
+                dth = traj[1,2] - traj[0,2]
+                dth = (dth + np.pi) % (2*np.pi) - np.pi
+                
+                dt0 = float(dt_seq[0])
+                if dt0 < 1e-3: dt0 = 0.1
+                
+                v_cmd = np.hypot(dx, dy) / dt0
+                w_cmd = dth / dt0
+                
+                # 方向判断
+                cos_th = np.cos(traj[0,2])
+                sin_th = np.sin(traj[0,2])
+                if dx * cos_th + dy * sin_th < 0:
+                    v_cmd = -v_cmd
+                
+                # 限幅
+                v_cmd = np.clip(v_cmd, -self.v_max, self.v_max)
+                w_cmd = np.clip(w_cmd, -self.omega_max, self.omega_max)
+                
+                self.last_u = np.array([v_cmd, w_cmd])
+            
+            return traj, None, self.last_u
+            
+        except Exception as e:
+            # print(f"[TEB Error] Solver failed: {e}")
+            # 失败时尝试简单的减速保持
+            return np.array([x0]), None, self.last_u * 0.5
 
-    def _build_solver(self):
-        """构建求解器"""
-        # 求解的步长
-        n = self.n_teb_points
-        epsilon = 1e-5
+    def _auto_calculate_n(self, x0, xf):
+        """计算点数，增加安全下限"""
+        dist_total = np.linalg.norm(xf[:2] - x0[:2])
         
-        # 目标函数
-        f = 0
-        # 约束条件
-        g_eq = []    # 等式约束
-        g_ineq = []  # 不等式约束
+        # 估算每步距离
+        T_avg = (self.T_min + self.T_max) / 2
+        max_step_dist = self.v_max * T_avg * 0.3 # 0.5 是保守系数
         
-        # --- 定义边界列表 ---
-        lbg_eq = []
-        ubg_eq = []
-        lbg_ineq = []
-        ubg_ineq = []
+        if max_step_dist < 0.01: max_step_dist = 0.1
 
-        # 变量定义
+        base_n = int(dist_total / max_step_dist)
+        # 关键修复：强制 n 至少为 3，且避免 n=1 导致的维度计算边缘 case
+        # n=1 时 x 向量长度 3，dt 向量长度 2，容易在切片时出错
+        base_n = max(3, min(base_n, 40)) 
+        return base_n
+
+    def _build_and_solve(self, x0, xf, obs_now):
+        # --- 变量定义 ---
+        # 确保 self.n 在此处是整数
+        n = int(self.n)
+        
         x = ca.SX.sym('x', n + 2)
         y = ca.SX.sym('y', n + 2)
         theta = ca.SX.sym('theta', n + 2)
-        z = ca.vertcat(x, y, theta)
+        dt = ca.SX.sym('dt', n + 1)
         
-        # 输入参数
-        n_p_base = 6 # Start(3) + Goal(3)
-        n_p_via = 2 * self.num_via_points
-        n_p_obs = 7 * self.max_obstacles # 7个参数对应 MppiSolver 的结构
-        n_p = n_p_base + n_p_via + n_p_obs
-        p = ca.SX.sym('p', n_p)
-        x_start, y_start, theta_start = p[0], p[1], p[2]
-        x_goal, y_goal, theta_goal = p[3], p[4], p[5]
-
-        via_indices = np.linspace(0, n + 1, self.num_via_points + 2, dtype=int)[1:-1]
-        # p 的结构: [Start(3), Goal(3), V1x, V1y, V2x, V2y, ...]
-        n_p_base = 6 
-        base_obs_idx = n_p_base + n_p_via
-        for i, idx in enumerate(via_indices):
-            # 获取当前 via point 的参数坐标
-            p_vx = p[n_p_base + 2*i]
-            p_vy = p[n_p_base + 2*i + 1]
-            
-            # 对应的轨迹变量坐标
-            traj_x = x[idx]
-            traj_y = y[idx]
-            
-            # 添加软约束
-            dist_sq = (traj_x - p_vx)**2 + (traj_y - p_vy)**2
-            f += self.w_via_point * dist_sq       
-
-
-        # 1. 起点,终点松弛约束
+        z = ca.vertcat(x, y, theta, dt)
+        
+        # --- 目标函数 ---
+        f = 0
+        g_eq = []
+        g_ineq = []
+        
+        # 起点终点约束
         g_eq.extend([
-            x[0] - x_start,    y[0] - y_start,    theta[0] - theta_start
+            x[0] - x0[0], y[0] - x0[1], theta[0] - x0[2]
         ])
-        # 对应的边界：6个0
-        lbg_eq.extend([0.0] * 3)
-        ubg_eq.extend([0.0] * 3)
-
-        f += self.w_goal * ((x[-1] - x_goal)**2 + (y[-1] - y_goal)**2)
-
-        # 2. 路径代价和运动学约束
+        f+= self.w_goal * ((x[-1] - xf[0])**2 + (y[-1] - xf[1])**2)
+        
         for i in range(n + 1):
             dx = x[i+1] - x[i]
             dy = y[i+1] - y[i]
-            dist_sq = dx**2 + dy**2 + epsilon
-            dist = ca.sqrt(dist_sq)
-            f += self.w_path * dist
             
-            # 线速度约束
-            v = dist / self.delta_t
+            # 1. 路径与时间代价
+            f += self.w_p * (dx**2 + dy**2)
+            f += self.w_t * dt[i]**2
+            
+            # 2. 非完整约束 (Cross product)
+            li_x, li_y = ca.cos(theta[i]), ca.sin(theta[i])
+            cross = li_x * dy - li_y * dx
+            f += self.w_kin * cross**2
+            
+            # 3. 动力学约束
+            dist = ca.sqrt(dx**2 + dy**2 + self.epsilon)
+            v = dist / (dt[i] + self.epsilon)
+            
+            dth_raw = theta[i+1] - theta[i]
+            omega = dth_raw / (dt[i] + self.epsilon)
+            
+            # 速度约束
             g_ineq.extend([v - self.v_max])
-            lbg_ineq.extend([-np.inf])
-            ubg_ineq.extend([0.0])
-
+            
             # 角速度约束
-            dth = ca.atan2(ca.sin(theta[i+1]-theta[i]),
-                           ca.cos(theta[i+1]-theta[i]))
-            omega = dth / self.delta_t
-            # omega <= max  =>  omega - max <= 0
-            # omega >= -max => -omega - max <= 0
             g_ineq.extend([omega - self.omega_max, -omega - self.omega_max])
-            lbg_ineq.extend([-np.inf, -np.inf])
-            ubg_ineq.extend([0.0, 0.0])
-
-            # 转弯半径约束 
-            radius = v / (ca.fabs(omega) + epsilon)
-            f += self.w_radius * ca.fmax(0, self.r_min - radius)**2
-
-            # 加速度约束
+            
+            # 最小半径惩罚
+            radius_approx = v / (ca.fabs(omega) + self.epsilon)
+            f += self.w_r * ca.fmax(0, self.r_min - radius_approx)**2
+            
+            # 加速度 (注意这里只到 n-1)
             if i < n:
+                dt_avg = 0.5 * (dt[i] + dt[i+1])
                 dx2 = x[i+2] - x[i+1]
                 dy2 = y[i+2] - y[i+1]
-                dist2 = ca.sqrt(dx2**2 + dy2**2 + epsilon) 
-                v2 = dist2 / self.delta_t
-                acc = (v2 - v) / self.delta_t # 简单的差分计算
+                v2 = ca.sqrt(dx2**2 + dy2**2 + self.epsilon) / (dt[i+1] + self.epsilon)
+                acc = (v2 - v) / (dt_avg + self.epsilon)
                 g_ineq.extend([acc - self.a_max, -acc - self.a_max])
-                lbg_ineq.extend([-np.inf, -np.inf])
-                ubg_ineq.extend([0.0, 0.0])
 
-            # 3. 非完整约束
-            dx = x[i+1] - x[i]
-            dy = y[i+1] - y[i]
-            li = ca.vertcat(ca.cos(theta[i]), ca.sin(theta[i]))
-            li1 = ca.vertcat(ca.cos(theta[i+1]), ca.sin(theta[i+1]))
-            cross = (li[0] + li1[0]) * dy - (li[1] + li1[1]) * dx
-            f += self.w_kin * cross**2
+        # 4. 避障代价
+        if len(obs_now) > 0:
+            for i in range(1, n + 2): # 对所有轨迹点(除起点)
+                for obs in obs_now:
+                    # 维度保护：必须有7个参数
+                    if obs.size < 7: continue
+                    obs_x, obs_y, obs_a, obs_b = obs[0], obs[1], obs[2], obs[3]
+                    cos_ot, sin_ot = obs[5], obs[6]
+                    
+                    dx_o = x[i] - obs_x
+                    dy_o = y[i] - obs_y
+                    x_rel = dx_o * cos_ot + dy_o * sin_ot
+                    y_rel = -dx_o * sin_ot + dy_o * cos_ot
+                    
+                    a_safe = obs_a + self.safe_distance
+                    b_safe = obs_b + self.safe_distance
+                    
+                    val = (x_rel / a_safe)**2 + (y_rel / b_safe)**2
+                    f += self.w_obs * ca.exp(4.0 * (1.0 - val))
 
-            # 4.对每个时间步 i，遍历所有障碍物 j
-            for j in range(self.max_obstacles):
-                # 提取参数: [cx, cy, a, b, dummy, cos_ot, sin_ot]
-                o_idx = base_obs_idx + j * 7
-                cx = p[o_idx]
-                cy = p[o_idx + 1]
-                a  = p[o_idx + 2]
-                b  = p[o_idx + 3]
-                # param 4 is dummy/angle, ignored here as we use cos/sin directly
-                cos_ot = p[o_idx + 5]
-                sin_ot = p[o_idx + 6]
-                
-                safe_a = a + self.safe_distance
-                safe_b = b + self.safe_distance
-                
-                # 计算相对位置
-                dx_obs = x[i] - cx
-                dy_obs = y[i] - cy
-                
-                # 旋转到障碍物坐标系 (Logic matches MppiSolver)
-                # lx = dx * cos + dy * sin
-                # ly = -dx * sin + dy * cos
-                lx = dx_obs * cos_ot + dy_obs * sin_ot
-                ly = -dx_obs * sin_ot + dy_obs * cos_ot
-                
-                # 椭圆方程: (x/a)^2 + (y/b)^2
-                # dist_val < 1.0 意味着在障碍物内 (碰撞)
-                # dist_val > 1.0 意味着安全
-                ellipse_dist = (lx / safe_a)**2 + (ly / safe_b)**2
-            
-                
-                # B. 软代价: 离得越近代价越高 (barrier function)
-                f += self.w_obs * ca.exp(5.0 * (1.0 - ellipse_dist))
+        # --- Solver Setup ---
+        # 自动计算维度
+        n_z = z.shape[0]
+        
+        lbx = -np.inf * np.ones(n_z)
+        ubx = np.inf * np.ones(n_z)
+        
+        # DT 边界设置 (关键：使用切片时确保索引不过界)
+        idx_dt_start = 3 * (n + 2)
+        # 这里的切片 idx_dt_start: 到底部，对于 n=1, idx=9, len=11, [9:] 取 9,10。正确。
+        lbx[idx_dt_start:] = self.T_min
+        ubx[idx_dt_start:] = self.T_max
+        
+        g = ca.vertcat(*g_eq, *g_ineq)
+        lbg = [0.0] * len(g_eq) + [-np.inf] * len(g_ineq)
+        ubg = [0.0] * len(g_eq) + [0.0] * len(g_ineq)
+        
+        nlp = {'x': z, 'f': f, 'g': g}
+        opts = {'ipopt.print_level': 0, 'print_time': 0, 'ipopt.sb': 'yes'}
+        solver = ca.nlpsol('solver', 'ipopt', nlp, opts)
+        
+        # 初值猜测
+        z0 = self._get_spline_initial_guess(x0, xf)
+        
+        # 安全检查：如果初值维度不匹配，强行 Resize
+        if z0.shape[0] != n_z:
+            # print(f"Warning: z0 shape {z0.shape} mismatch with vars {n_z}, recreating.")
+            z0 = np.zeros(n_z) # Fallback to zeros if mismatch (rare)
 
-        # 记录约束数量
-        self.n_eq = len(g_eq)
-        self.n_ineq = len(g_ineq)
+        res = solver(x0=z0, lbg=lbg, ubg=ubg, lbx=lbx, ubx=ubx)
+        return res
 
-        # 保存边界到类成员变量 (将 list 转为 numpy array)
-        self.lbg = np.concatenate([lbg_eq, lbg_ineq])
-        self.ubg = np.concatenate([ubg_eq, ubg_ineq])
-
-        # 构建NLP
-        g_all = ca.vertcat(*g_eq, *g_ineq)
+    def _get_spline_initial_guess(self, x0, xf):
+        n = self.n
+        n_points = n + 2
+        t = np.linspace(0, 1, n_points)
         
-        nlp = {'x': z, 'f': f, 'g': g_all, 'p': p}
+        dist = np.linalg.norm(xf[:2] - x0[:2])
+        scale = max(dist * 1.0, 0.1) # 避免 scale 为 0
         
-        opts = {
-            'ipopt.print_level': 0, 
-            'print_time': 0, 
-            'ipopt.max_iter': 500, 
-            'ipopt.tol': 1e-3,
-            'ipopt.warm_start_init_point': 'yes'
-        }
-
-        solver = ca.nlpsol('solver', 'ipopt', nlp, opts)    
+        p0, pf = x0[:2], xf[:2]
+        v0 = np.array([np.cos(x0[2]), np.sin(x0[2])]) * scale
+        vf = np.array([np.cos(xf[2]), np.sin(xf[2])]) * scale
         
-        return solver
-
-    def _get_initial_guess(self, x0, xf):
-        """
-        生成初始猜测：优先级 热启动 > 参考路径 > 赫米特插值
-        """
-        n = self.n_teb_points
+        # Hermite spline
+        h00 = 2*t**3 - 3*t**2 + 1
+        h10 = t**3 - 2*t**2 + t
+        h01 = -2*t**3 + 3*t**2
+        h11 = t**3 - t**2
         
-        # --- 策略1：热启动 (Warm Start) ---
-        # 如果上一帧求解成功，利用上一帧的轨迹
-        if self.last_opt_z is not None:
-            # 提取上一帧的 x, y, theta
-            last_x = self.last_opt_z[:n+2]
-            last_y = self.last_opt_z[n+2:2*(n+2)]
-            last_th = self.last_opt_z[2*(n+2):]
-            
-            # 创建新的猜测数组
-            init_x = np.zeros(n + 2)
-            init_y = np.zeros(n + 2)
-            init_theta = np.zeros(n + 2)
-            
-            # 平移操作：discard 第一个点 (已经是过去式)，整体前移
-            # new[0]...new[n-1] = old[1]...old[n]
-            init_x[:-1] = last_x[1:]
-            init_y[:-1] = last_y[1:]
-            init_theta[:-1] = last_th[1:]
-            
-            # 外推最后一个点：假设保持末端速度方向延伸
-            # 简单做法：复制倒数第二个点，或者线性外推
-            init_x[-1] = 2*init_x[-2] - init_x[-3]
-            init_y[-1] = 2*init_y[-2] - init_y[-3]
-            init_theta[-1] = init_theta[-2] # 角度保持不变
-            
-            # 强制修正起点和终点为当前实际值 (这一步很重要，因为求解器对初值敏感)
-            init_x[0], init_y[0], init_theta[0] = x0
-            init_x[-1], init_y[-1], init_theta[-1] = xf
-            
-            # 重新组合
-            return np.concatenate([init_x, init_y, init_theta])
-
-        # --- 策略2：基于参考路径的采样 (原有逻辑的优化版) ---
-        # 线性插值位置
-        if self.end_idx <= self.prev_idx:
-            self.end_idx = min(self.prev_idx + 1, len(self.ref_path) - 1)
+        path_xy = (np.outer(h00, p0) + np.outer(h10, v0) + 
+                   np.outer(h01, pf) + np.outer(h11, vf))
+        init_x = path_xy[:, 0]
+        init_y = path_xy[:, 1]
         
-        segment_length = self.end_idx - self.prev_idx + 1
+        # Angle interpolation
+        dxs = np.diff(init_x)
+        dys = np.diff(init_y)
+        # Pad last diff to keep size consistent
+        dxs = np.append(dxs, dxs[-1])
+        dys = np.append(dys, dys[-1])
         
-        # 如果片段太短，直接使用备用策略
-        if segment_length <= 2:
-            return self._get_fallback_initial_guess(x0, xf)
-
-        # 提取片段
-        ref_segment = self.ref_path[self.prev_idx:self.end_idx+1]
-        
-        # 使用 numpy 插值确保点数正好是 n+2
-        t_original = np.linspace(0, 1, len(ref_segment))
-        t_new = np.linspace(0, 1, n + 2)
-        
-        # 位置插值
-        init_x = np.interp(t_new, t_original, ref_segment[:, 0])
-        init_y = np.interp(t_new, t_original, ref_segment[:, 1])
-        
-        # 角度插值 (处理环绕问题)
-        if ref_segment.shape[1] >= 3:
-            ref_theta = ref_segment[:, 2]
-            # Unwrapping 是关键，防止角度从 3.14 跳变到 -3.14 导致的插值错误
-            ref_theta_unwrapped = np.unwrap(ref_theta)
-            init_theta = np.interp(t_new, t_original, ref_theta_unwrapped)
-        else:
-            # 如果参考路径没有角度，使用反正切计算
-            init_theta = np.zeros(n+2)
-            dxs = np.diff(init_x)
-            dys = np.diff(init_y)
-            yaws = np.arctan2(dys, dxs)
-            init_theta[:-1] = yaws
-            init_theta[-1] = yaws[-1]
-            init_theta = np.unwrap(init_theta)
-
-        # 强制修正起点终点
-        init_x[0], init_y[0], init_theta[0] = x0
-        init_x[-1], init_y[-1], init_theta[-1] = xf
-        
-        return np.concatenate([init_x, init_y, init_theta])
-
-    def _get_fallback_initial_guess(self, x0, xf):
-        """
-        备用猜测：使用三次赫米特插值 (Cubic Hermite Spline)
-        相比线性插值，它能生成符合起止角度的S形曲线，更符合车辆运动学
-        """
-        n = self.n_teb_points
-        num_points = n + 2
-        t = np.linspace(0, 1, num_points)
-        
-        # 提取起止点信息
-        p0 = np.array([x0[0], x0[1]])
-        p1 = np.array([xf[0], xf[1]])
-        th0 = x0[2]
-        th1 = xf[2]
-        
-        # 计算欧几里得距离，作为切线向量的模长估算
-        dist = np.linalg.norm(p1 - p0)
-        # 这是一个启发式参数，通常取距离的 1.0 到 1.5 倍效果较好
-        tangent_scale = dist * 1.2
-        
-        # 定义起止点的切线向量 (速度方向)
-        m0 = np.array([np.cos(th0), np.sin(th0)]) * tangent_scale
-        m1 = np.array([np.cos(th1), np.sin(th1)]) * tangent_scale
-        
-        # --- 赫米特基函数计算 ---
-        # h00 = 2t^3 - 3t^2 + 1
-        # h10 = t^3 - 2t^2 + t
-        # h01 = -2t^3 + 3t^2
-        # h11 = t^3 - t^2
-        t2 = t * t
-        t3 = t2 * t
-        
-        h00 = 2*t3 - 3*t2 + 1
-        h10 = t3 - 2*t2 + t
-        h01 = -2*t3 + 3*t2
-        h11 = t3 - t2
-        
-        # 计算 x 和 y 轨迹
-        # p(t) = h00*p0 + h10*m0 + h01*p1 + h11*m1
-        init_x = h00 * p0[0] + h10 * m0[0] + h01 * p1[0] + h11 * m1[0]
-        init_y = h00 * p0[1] + h10 * m0[1] + h01 * p1[1] + h11 * m1[1]
-        
-        # 计算角度轨迹
-        # 方法1：直接插值角度（简单但可能不匹配形状）
-        # 方法2：计算赫米特曲线的导数作为角度（更准确）
-        # 这里使用方法2
-        dx_dt = (6*t2 - 6*t)*p0[0] + (3*t2 - 4*t + 1)*m0[0] + (-6*t2 + 6*t)*p1[0] + (3*t2 - 2*t)*m1[0]
-        dy_dt = (6*t2 - 6*t)*p0[1] + (3*t2 - 4*t + 1)*m0[1] + (-6*t2 + 6*t)*p1[1] + (3*t2 - 2*t)*m1[1]
-        
-        init_theta = np.arctan2(dy_dt, dx_dt)
-        init_theta = np.unwrap(init_theta)
-        
-        # 强制修正起点终点
+        init_theta = np.arctan2(dys, dxs)
         init_theta[0] = x0[2]
         init_theta[-1] = xf[2]
+        init_theta = np.unwrap(init_theta)
         
-        return np.concatenate([init_x, init_y, init_theta])
+        init_dt = np.ones(n + 1) * ((self.T_min + self.T_max) / 2)
+        
+        return np.concatenate([init_x, init_y, init_theta, init_dt])
 
-    def _extract_trajectory(self, res, x0, xf):
-        """提取轨迹"""
-        n = self.n_teb_points
+    def _get_local_goal_from_path(self, x, y):
+        search_range = 20 
+        start_search = max(0, self.prev_idx - 5)
+        end_search = min(len(self.ref_path), self.prev_idx + search_range)
         
-        # 提取变量
-        z_opt = res['x'].full().flatten()
+        path_chunk = self.ref_path[start_search:end_search]
+        if len(path_chunk) == 0: return self.ref_path[-1]
         
-        # 分割变量
-        x_opt = z_opt[:n+2]
-        y_opt = z_opt[n+2:2*(n+2)]
-        th_opt = z_opt[2*(n+2):]
+        dists = np.hypot(path_chunk[:,0] - x, path_chunk[:,1] - y)
+        min_local = np.argmin(dists)
+        curr_idx = start_search + min_local
+        self.prev_idx = curr_idx
         
-        # 确保起点终点正确
-        # x_opt[0], y_opt[0], th_opt[0] = x0
-        # x_opt[-1], y_opt[-1], th_opt[-1] = xf
+        accum_dist = 0.0
+        target_idx = curr_idx
+        while target_idx < len(self.ref_path) - 1:
+            d = np.hypot(self.ref_path[target_idx+1,0]-self.ref_path[target_idx,0], 
+                         self.ref_path[target_idx+1,1]-self.ref_path[target_idx,1])
+            accum_dist += d
+            if accum_dist > self.lookahead_dist:
+                break
+            target_idx += 1
+        return self.ref_path[target_idx]
+
+    def _extract_trajectory(self, res):
+        z_val = res['x'].full().flatten()
+        n = self.n
+        idx_end_x = n + 2
+        idx_end_y = 2 * (n + 2)
+        idx_end_th = 3 * (n + 2)
         
-        # 角度归一化
-        for i in range(n + 2):
-            th_opt[i] = (th_opt[i] + np.pi) % (2 * np.pi) - np.pi
-        
-        # 构建轨迹
-        trajectory = np.column_stack([x_opt, y_opt, th_opt])
-        
-        return trajectory
+        x = z_val[0 : idx_end_x]
+        y = z_val[idx_end_x : idx_end_y]
+        th = z_val[idx_end_y : idx_end_th]
+        dt = z_val[idx_end_th :]
+        return np.column_stack([x, y, th]), dt

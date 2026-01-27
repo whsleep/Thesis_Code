@@ -58,7 +58,8 @@ class SIM_ENV:
         #                              safe_distance=0.5,
         #                              visualize_optimal_traj=True,
         #                              visualze_sampled_trajs=True)
-        self.solver = TebplanSolver(ref_path=self.ref_path)
+        # self.solver = TebplanSolver(ref_path=self.ref_path)
+        self.solver = AccelSpaceDwaSolver(ref_path=self.ref_path)
 
     def step(self,):
         # 环境可视化
