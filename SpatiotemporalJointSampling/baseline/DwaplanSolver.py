@@ -268,16 +268,12 @@ class DwaplanSolver:
                 dist_sq = (lx / safe_a)**2 + (ly / safe_b)**2
                 
                 min_dist_on_traj = np.min(dist_sq)
-                if min_dist_on_traj <= 1.0:
-                    return float('inf')
-                
+
                 if min_dist_on_traj < min_algebraic_dist_all:
                     min_algebraic_dist_all = min_dist_on_traj
 
-            if min_algebraic_dist_all != float('inf'):
-                cost_obs = 1.0 / min_algebraic_dist_all 
-            else:
-                cost_obs = 0.0
+
+        cost_obs = 1.0 / min_algebraic_dist_all 
 
         # 6. 总代价 (加入 w_obs 和 w_track)
         total_cost = (self.w_heading * cost_heading + 

@@ -9,8 +9,8 @@ world:
 
 
 robot:
-  - kinematics: {name: 'diff'} 
-    shape: {name: 'rectangle', length: 2, width: 1 , wheelbase: 0}
+    kinematics: {name: 'diff'} 
+    shape: {name: 'rectangle', length: 2, width: 1 , wheelbase: 0.2}
     state: [10, 40, 1.57] 
     goal: [29, 18, 3] 
     vel_min: [-5, -3]
@@ -33,23 +33,11 @@ robot:
 
 obstacle:
   - number: 10
-    distribution: {name: 'random', range_low: [5, 5, -3.14], range_high: [40, 40, 3.14]}
-    kinematics: {name: 'diff'}
+    kinematics: {name: 'omni'}
+    distribution: {name: 'random', range_low: [10, 10, -3.14], range_high: [40, 40, 3.14]}
+    behavior: {name: 'rvo', wander: True, range_low: [10, 10, -3.14], range_high: [40, 40, 3.14], vxmax: 2, vymax: 2, factor: 5.0}
+    vel_max: [2, 2]
+    vel_min: [-2, -2]
     shape:
-      - {name: 'circle', radius: 1.0}  # radius
-      - {name: 'circle', radius: 0.8}  # radius
-      - {name: 'circle', radius: 0.8}  # radius
-      - {name: 'circle', radius: 1.0}  # radius
-      - {name: 'circle', radius: 0.9}  # radius
-
-    behavior: 
-      - {name: 'dash', range_low: [5, 5, -3.14], range_high: [40, 40, 3.14], wander: True}
-
-    vel_min: [-1.0, -3.14]
-    vel_max: [1.0, 3.14]
-    arrive_mode: position
-    goal_threshold: 0.3
-    plot:
-      show_goal: False
-      show_arrow: True
-      show_trail: False
+      - {name: 'circle', radius: 1.5, random_shape: True}  
+      - {name: 'polygon', random_shape: true, avg_radius_range: [0.5, 1.0], irregularity_range: [0, 0.4], spikeyness_range: [0, 0.4], num_vertices_range: [4, 6]}

@@ -13,7 +13,7 @@ class MppiplanSolver:
                 param_lambda: float = 50.0,
                 param_alpha: float = 1.0,
                 sigma: np.ndarray = np.array([[0.5, 0.0], [0.0, 0.3]]), # [v_noise, w_noise]
-                stage_cost_weight: np.ndarray = np.array([20.0, 20.0, 20.0, 1.0]),
+                stage_cost_weight: np.ndarray = np.array([10.0, 10.0, 10.0, 1.0]),
                 terminal_cost_weight: np.ndarray = np.array([50.0, 50.0, 50.0, 1.0]),
                 w_obs: float = 100.0,
                 safe_distance: float = 0.5,
@@ -294,7 +294,7 @@ class MppiplanSolver:
         """NumPy 批量最近点查找"""
         prev_idx = self.prev_waypoints_idx
         # 限制搜索窗口
-        end_idx = min(prev_idx + 200, self.ref_path.shape[0])
+        end_idx = min(prev_idx + 20, self.ref_path.shape[0])
         ref_segment = self.ref_path[prev_idx:end_idx] # [N_seg, 4]
         
         # x_pos: [K] -> [K, 1]

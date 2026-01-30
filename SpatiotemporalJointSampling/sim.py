@@ -8,15 +8,82 @@ from sklearn.cluster import DBSCAN
 
 from baseline.TebSolver import TebplanSolver
 from baseline.DwaplanSolver import DwaplanSolver
-from baseline.AccelSpaceDwaSolver import AccelSpaceDwaSolver
+from baseline.AccDwaSolver import AccDwaSolver
 from baseline.MppiSolver import MppiplanSolver
+from baseline.MpcCbfSolver import MpcCbfSolver
+
+from utils.logger import SimulationLogger
+
+
+# --- 全局配置：求解器参数映射 ---
+# 这样管理参数比写一堆注释要清晰得多
+SOLVER_CONFIGS = {
+    "teb": {
+        "class": TebplanSolver,
+        "params": {
+            "safe_distance": 1.5,
+            "v_max": 5.0, "omega_max": 3.0, "a_max": 2.0,
+            "lookahead_dist": 5.0,
+            "w_p": 0.5, "w_t": 2.0, "w_kin": 50.0,
+            "w_r": 5.0, "w_obs": 20.0, "w_goal": 1.0,
+            "w_acc": 0.1, "w_theta": 0.1,
+            "T_max": 0.4, "T_min": 0.05
+        }
+    },
+    "dwa": {
+        "class": DwaplanSolver,
+        "params": {
+            "delta_t": 0.1, "v_max": 5.0, "omega_max": 3.0,
+            "a_max": 2.0, "alpha_max": 3.0, "predict_time": 2.0,
+            "sample_v_count": 10, "sample_w_count": 20,
+            "w_heading": 0.15, "w_dist": 0.4,
+            "w_vel": 0.5, "w_obs": 10.0, "w_track": 0.3,
+            "safe_distance": 1.5, "lookahead_dist": 5.0,
+            "w_obs": 15.0, "w_goal": 1.0
+        }
+    },
+    "mppi": {
+        "class": MppiplanSolver,
+        "params": {
+            "delta_t": 0.1, "horizon_step_T": 20, "number_of_samples_K": 200, "param_exploration": 0.0,
+            "number_of_samples_K": 200, 
+            "w_obs": 100.0, "safe_distance": 1.5,
+            "visualize_optimal_traj": True
+        },
+    },
+    "accdwa": {
+        "class": AccDwaSolver,
+        "params": {
+            "delta_t": 0.1, "v_max": 5.0, "omega_max": 3.0,
+            "a_limit": 2.0, "sample_count": 20, "predict_time": 2.0,
+            "w_heading": 0.5, "w_dist": 0.3, "w_vel": 0.4,
+            "w_obs": 10.0, "w_track": 1.0, "safe_distance": 1.5, "lookahead_dist": 5.0
+        }
+    },
+    "mpccbf": {
+        "class": MpcCbfSolver,
+        "params": {
+            "delta_t": 0.1,
+            "horizon_step_T": 20,
+            "v_max": 2.0,
+            "omega_max": 3.0,
+            "safe_distance": 1.5,
+            "gamma": 0.3,
+        }
+    }
+}
 
 
 class SIM_ENV:
-    def __init__(self, world_file="robot_world.yaml", render=False):
-
+    def __init__(self, world_file="robot_world.yaml", render=False, save_ani=True, solver_type="teb", log_path="logs" , log_name="mppi_test", timeout=100):
+        # 配置参数
+        self.solver_type = solver_type
+        self.timeout = timeout
+        # 初始化记录
+        self.logger = SimulationLogger(log_dir=log_path)
+        self.log_name = log_name
         # 初始化环境
-        self.env = EnvBase(world_file, display=render, disable_all_plot=not render,save_ani = True)
+        self.env = EnvBase(world_file, display=render, disable_all_plot=not render, save_ani=save_ani, log_level="INFO" )
         # 环境参数
         self.robot_goal = self.env.get_robot_info(0).goal
         # 读取参考路径
@@ -26,40 +93,22 @@ class SIM_ENV:
         self.ref_path = np.array(self.ref_path).squeeze()
 
         # 局部求解器
-        # self.solver = DwaplanSolver(ref_path=self.ref_path, 
-        #                             delta_t=0.1,
-        #                             v_max=10.0, 
-        #                             omega_max=3.0, 
-        #                             a_max=8.0, 
-        #                             alpha_max=5.0, 
-        #                             predict_time=2.0,
-        #                             sample_v_count=10,
-        #                             sample_w_count=20,
-        #                             w_heading=0.15, 
-        #                             w_dist=1, 
-        #                             w_vel=0.8,
-        #                             w_obs=10.0, 
-        #                             w_track=5,
-        #                             safe_distance=0.5,
-        #                             lookahead_dist=5.0)
-        # self.solver = MppiplanSolver(ref_path=self.ref_path,
-        #                              delta_t=0.1,
-        #                              max_omega_abs=3.0,
-        #                              max_vel_abs=10.0,
-        #                              horizon_step_T=20,
-        #                              number_of_samples_K=200,
-        #                              param_exploration= 0.3,
-        #                              param_lambda=50.0,
-        #                              param_alpha=1.0,
-        #                              sigma=np.array([[0.5, 0.0], [0.0, 1.0]]),
-        #                              stage_cost_weight=np.array([20.0, 20.0, 20.0, 1.0]),
-        #                              terminal_cost_weight=np.array([50.0, 50.0, 50.0, 1.0]),
-        #                              w_obs=100.0,
-        #                              safe_distance=0.5,
-        #                              visualize_optimal_traj=True,
-        #                              visualze_sampled_trajs=True)
-        # self.solver = TebplanSolver(ref_path=self.ref_path)
-        self.solver = AccelSpaceDwaSolver(ref_path=self.ref_path)
+        self.solver = self._init_solver(solver_type)
+
+    def _init_solver(self, solver_type):
+        """根据配置初始化求解器"""
+        if solver_type not in SOLVER_CONFIGS:
+            print(f"[WARN] Unknown solver {solver_type}, fallback to TEB")
+            config = SOLVER_CONFIGS["teb"]
+        else:
+            config = SOLVER_CONFIGS[solver_type]
+            
+        SolverClass = config["class"]
+        params = config["params"]
+        
+        # 实例化，传入 ref_path 和其他参数
+        # 注意：这里假设所有 Solver 的构造函数都接受 ref_path 和 **kwargs
+        return SolverClass(ref_path=self.ref_path, **params)
 
     def step(self,):
         # 环境可视化
@@ -75,17 +124,39 @@ class SIM_ENV:
             self.env.draw_box(obs, refresh=True, color= "-b")
 
         # 计算求解时间
-        star_time = time.time()
-        opt_traj ,samp_traj, action_input_list = self.solver.calc_control_input(self.robot_state,
-                                                                                obstacles=center_list)
+        start_time = time.time()
+        try:
+            # 调用求解器
+            opt_traj, samp_traj, action_input_list = self.solver.calc_control_input(
+                self.robot_state,
+                obstacles=center_list
+            )
+        except Exception as e:
+            print(f"[Error] Solver Exception: {e}")
+            # 发生错误时，原地停止，避免程序崩溃
+            opt_traj, samp_traj, action_input_list = [], [], np.array([0.0, 0.0])
         end_time = time.time()
-        # print(" DWA solver time:", end_time - star_time)
-        # print(" MMPI solver time:", end_time - star_time)
-        print(" TEB solver time:", end_time - star_time)
+        dt = end_time - start_time
+
+        # 记录数据
+        is_collision = self.env.robot.collision
+        is_reached = self.env.robot.arrive
+        is_timeout = self.env.time >= self.timeout
+        self.logger.log_step(
+            step_time=self.env.time,
+            solver_name=self.solver_type,
+            compute_time=dt,
+            robot_state=self.robot_state,
+            action=action_input_list,
+            collision=is_collision,
+            goal_reached=is_reached,
+            timeout=is_timeout
+        )
+        self.env.logger.info(f" Step: {self.env.time} | {self.solver_type.upper()} Time: {dt*1000:.2f} ms")
         # 绘制采样轨迹
-        for i in range(samp_traj.shape[0]):
-            list_of_arrays = [np.array(row).reshape(-1, 1) for row in samp_traj[i]]
-            self.env.draw_trajectory(list_of_arrays, traj_type='-y', lw=0.5, refresh=True)
+        # for i in range(samp_traj.shape[0]):
+        #     list_of_arrays = [np.array(row).reshape(-1, 1) for row in samp_traj[i]]
+        #     self.env.draw_trajectory(list_of_arrays, traj_type='-y', lw=0.5, refresh=True)
         # 绘制最优轨迹
         list_of_arrays = [np.array(row).reshape(-1, 1) for row in opt_traj]
         self.env.draw_trajectory(list_of_arrays, traj_type='-r', lw=2.0, refresh=True)
@@ -95,13 +166,20 @@ class SIM_ENV:
         self.env.step(action_id=0, action=action_input_list)
 
         # 是否抵达
-        if self.env.robot.arrive:
+        if is_reached:
             print("Goal reached")
+            self.logger.save_to_csv(filename_prefix=self.log_name)
             return True
         
         # 是否碰撞
-        if self.env.robot.collision:
+        if is_collision:
             print("collision !!!")
+            self.logger.save_to_csv(filename_prefix=self.log_name)
+            return True
+        # 是否超时
+        if is_timeout:
+            print("timeout !!!")
+            self.logger.save_to_csv(filename_prefix=self.log_name)
             return True
         
         return False
