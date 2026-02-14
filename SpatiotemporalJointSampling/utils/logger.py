@@ -14,7 +14,7 @@ class SimulationLogger:
         if not os.path.exists(log_dir):
             os.makedirs(log_dir)
             
-    def log_step(self, step_time, solver_name, compute_time, robot_state, action, collision, goal_reached, timeout):
+    def log_step(self, step_time, solver_name, compute_time, robot_state, min_dist_to_obs, action, collision, goal_reached, timeout):
         """
         记录单步数据
         :param robot_state: [x, y, theta] 或 [x, y, theta, v, w]
@@ -37,6 +37,7 @@ class SimulationLogger:
             "pos_x": pos_x,
             "pos_y": pos_y,
             "heading": heading,
+            "min_dist_to_obs": min_dist_to_obs,
             "cmd_v": float(action_flat[0]),
             "cmd_w": float(action_flat[1]),
             "collision": 1 if collision else 0,
@@ -64,3 +65,7 @@ class SimulationLogger:
             print(f"[Logger] Stats -> Avg Time: {avg_time:.2f}ms, Max Time: {max_time:.2f}ms")
         except Exception as e:
             print(f"[Logger] Failed to save CSV: {e}") 
+
+    def clear(self):
+        """清空数据缓冲区"""
+        self.data_buffer = []

@@ -11,6 +11,7 @@ from baseline.DwaplanSolver import DwaplanSolver
 from baseline.AccDwaSolver import AccDwaSolver
 from baseline.MppiSolver import MppiplanSolver
 from baseline.MpcCbfSolver import MpcCbfSolver
+from baseline.RdaSolver import RdaSolver
 
 from utils.logger import SimulationLogger
 
@@ -37,16 +38,16 @@ SOLVER_CONFIGS = {
             "a_max": 2.0, "alpha_max": 3.0, "predict_time": 2.0,
             "sample_v_count": 10, "sample_w_count": 20,
             "w_heading": 0.15, "w_dist": 0.4,
-            "w_vel": 0.5, "w_obs": 10.0, "w_track": 0.3,
+            "w_vel": 0.3, "w_track": 0.4,
             "safe_distance": 1.5, "lookahead_dist": 5.0,
-            "w_obs": 15.0, "w_goal": 1.0
+            "w_obs": 5.0, "w_goal": 1.0
         }
     },
     "mppi": {
         "class": MppiplanSolver,
         "params": {
             "delta_t": 0.1, "horizon_step_T": 20, "number_of_samples_K": 200, "param_exploration": 0.0,
-            "number_of_samples_K": 200, 
+            "number_of_samples_K": 200, "max_omega_abs": 3.0, "max_v": 5.0,
             "w_obs": 100.0, "safe_distance": 1.5,
             "visualize_optimal_traj": True
         },
@@ -56,8 +57,8 @@ SOLVER_CONFIGS = {
         "params": {
             "delta_t": 0.1, "v_max": 5.0, "omega_max": 3.0,
             "a_limit": 2.0, "sample_count": 20, "predict_time": 2.0,
-            "w_heading": 0.5, "w_dist": 0.3, "w_vel": 0.4,
-            "w_obs": 10.0, "w_track": 1.0, "safe_distance": 1.5, "lookahead_dist": 5.0
+            "w_heading": 0.5, "w_dist": 0.2, "w_vel": 0.3,
+            "w_obs": 4.0, "w_track": 0.5, "safe_distance": 1.5, "lookahead_dist": 5.0
         }
     },
     "mpccbf": {
@@ -70,20 +71,29 @@ SOLVER_CONFIGS = {
             "safe_distance": 1.5,
             "gamma": 0.3,
         }
+    },
+    "rda": {
+        "class": RdaSolver,
+        "params": {
+            "delta_t": 0.1,
+            "v_max": 5.0, 
+            "omega_max": 3.0,
+            "a_max": 2.0
+        }
     }
 }
 
 
 class SIM_ENV:
-    def __init__(self, world_file="robot_world.yaml", render=False, save_ani=True, solver_type="teb", log_path="logs" , log_name="mppi_test", timeout=100):
+    def __init__(self, world_file="robot_world.yaml", render=False, save_ani=True, solver_type="teb", log_path="logs" , timeout=100):
         # 配置参数
         self.solver_type = solver_type
         self.timeout = timeout
         # 初始化记录
         self.logger = SimulationLogger(log_dir=log_path)
-        self.log_name = log_name
+        self.log_name = None
         # 初始化环境
-        self.env = EnvBase(world_file, display=render, disable_all_plot=not render, save_ani=save_ani, log_level="INFO" )
+        self.env = EnvBase(world_file, display=render, disable_all_plot=not render, save_ani=save_ani, log_level="ERROR" )
         # 环境参数
         self.robot_goal = self.env.get_robot_info(0).goal
         # 读取参考路径
@@ -105,10 +115,10 @@ class SIM_ENV:
             
         SolverClass = config["class"]
         params = config["params"]
-        
+        robot_info = self.env.get_robot_info(0)
         # 实例化，传入 ref_path 和其他参数
         # 注意：这里假设所有 Solver 的构造函数都接受 ref_path 和 **kwargs
-        return SolverClass(ref_path=self.ref_path, **params)
+        return SolverClass(ref_path=self.ref_path, robot_info=robot_info, **params)
 
     def step(self,):
         # 环境可视化
@@ -119,6 +129,7 @@ class SIM_ENV:
         self.robot_state = self.env.get_robot_state()
         scan_data = self.env.get_lidar_scan()
         obs_list, center_list = self.scan_ellipse(self.robot_state,scan_data)
+        min_dist_to_obs = min(scan_data['ranges']) if len(scan_data['ranges']) > 0 else float('inf')
         # 绘制障碍
         for obs in obs_list:
             self.env.draw_box(obs, refresh=True, color= "-b")
@@ -147,6 +158,7 @@ class SIM_ENV:
             solver_name=self.solver_type,
             compute_time=dt,
             robot_state=self.robot_state,
+            min_dist_to_obs=min_dist_to_obs,
             action=action_input_list,
             collision=is_collision,
             goal_reached=is_reached,
@@ -183,6 +195,15 @@ class SIM_ENV:
             return True
         
         return False
+    
+    def set_log_name(self, name):
+        self.log_name = name
+
+    def reset(self):
+        self.env.reset()
+        self.logger.clear()
+        del self.solver
+        self.solver = self._init_solver(self.solver_type)
     
     def scan_ellipse(self, state, scan_data):
         ranges = np.array(scan_data['ranges'])

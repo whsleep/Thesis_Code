@@ -18,7 +18,7 @@ EXPERIMENT_ROOT = PROJECT_ROOT / "experiment_results"
 OUTPUT_DIR = EXPERIMENT_ROOT / "performance"
 
 # 定义要分析的算法
-ALGORITHMS = ['accdwa', 'dwa', 'mppi']
+ALGORITHMS = ['accdwa', 'dwa', 'mppi', 'teb', 'rda']
 # ===========================================
 
 def calculate_path_length(df):
@@ -57,8 +57,8 @@ def calculate_smoothness(df):
     # 2. 计算 Jerk 的平方
     squared_jerk_norms = np.sum(jerk_vectors ** 2, axis=1)
     
-    # 3. 计算积分 (Sum * dt)
-    e_jerk = np.sum(squared_jerk_norms) * dt / len(dt_array)
+    # 3. 计算 E_jerk
+    e_jerk = np.sum(squared_jerk_norms) * dt / len(squared_jerk_norms)
     
     return e_jerk
 
@@ -83,13 +83,17 @@ def analyze_single_file(filepath):
             'status': status,
             'nav_time': last_row['step_time'],
             'path_length': 0.0,
-            'smoothness': 0.0
+            'smoothness': 0.0,
+            'compute_time_ms': 0.0 
         }
         
         # 仅对成功案例计算详细指标
         if status == 'success':
             metrics['path_length'] = calculate_path_length(df)
             metrics['smoothness'] = calculate_smoothness(df)
+            # 计算平均求解时间 (整个轨迹的平均值)
+            if 'compute_time_ms' in df.columns:
+                metrics['compute_time_ms'] = df['compute_time_ms'].mean()
             
         return metrics
 
@@ -151,17 +155,19 @@ def main():
             time_mean = success_df['nav_time'].mean()
             len_mean = success_df['path_length'].mean()
             smooth_mean = success_df['smoothness'].mean()
+            compute_mean = success_df['compute_time_ms'].mean()  
             
             # 计算方差 (样本数需 > 1)
             if len(success_df) > 1:
                 time_var = success_df['nav_time'].var()
                 len_var = success_df['path_length'].var()
                 smooth_var = success_df['smoothness'].var()
+                compute_var = success_df['compute_time_ms'].var() 
             else:
-                time_var, len_var, smooth_var = 0.0, 0.0, 0.0
+                time_var, len_var, smooth_var, compute_var = 0.0, 0.0, 0.0, 0.0
         else:
-            time_mean, len_mean, smooth_mean = 0.0, 0.0, 0.0
-            time_var, len_var, smooth_var = 0.0, 0.0, 0.0
+            time_mean, len_mean, smooth_mean, compute_mean = 0.0, 0.0, 0.0, 0.0
+            time_var, len_var, smooth_var, compute_var = 0.0, 0.0, 0.0, 0.0
 
         # --- 3. 汇总数据 (确保包含方差) ---
         summary = {
@@ -171,11 +177,13 @@ def main():
             'Collision_Rate': collision_rate,
             'Timeout_Rate': timeout_rate,
             'Time_Mean': time_mean,
-            'Time_Var': time_var,       # <--- 已保存方差
+            'Time_Var': time_var,
             'Length_Mean': len_mean,
-            'Length_Var': len_var,      # <--- 已保存方差
+            'Length_Var': len_var,
             'Smoothness_Mean': smooth_mean,
-            'Smoothness_Var': smooth_var # <--- 已保存方差
+            'Smoothness_Var': smooth_var,
+            'ComputeTime_Mean': compute_mean,  
+            'ComputeTime_Var': compute_var     
         }
         all_summaries.append(summary)
 
@@ -190,7 +198,7 @@ def main():
         
         # 终端预览 (显式展示方差列)
         print("\n=== Result Preview ===")
-        print(final_df.to_string()) # 直接打印所有列，确保你能看到 Variance
+        print(final_df.to_string())
     else:
         print("No valid data processed.")
 

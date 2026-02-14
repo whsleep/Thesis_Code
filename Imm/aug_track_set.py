@@ -5,6 +5,7 @@ from imm_aug_mix import IMMAugMixTracker7D
 from imm_aug_cc import IMMAugCCTracker
 from imm_aug_pc import IMMAugPCTracker
 
+
 # ========================================================
 # 1. 论文 V.A 节运动模型 (用于数据生成)
 # ========================================================
@@ -119,6 +120,7 @@ def plot_integrated_dashboard(true_pos, measurements, est_dict, prob_dict, rmse_
     rmse_dict: {'CC': rmse_cc, 'PC': rmse_pc, 'MIX': rmse_mix}
     """
     fig = plt.figure(figsize=(18, 12))
+    
     # 创建 3x2 网格
     gs = GridSpec(3, 2, figure=fig, width_ratios=[2, 1], hspace=0.3, wspace=0.2)
 
@@ -126,9 +128,9 @@ def plot_integrated_dashboard(true_pos, measurements, est_dict, prob_dict, rmse_
     ax_traj = fig.add_subplot(gs[0:2, 0])
     ax_traj.plot(est_dict['CC'][:, 0], est_dict['CC'][:, 1], 'r--', lw=5, label='IMM-CC', alpha=0.7)
     ax_traj.plot(est_dict['PC'][:, 0], est_dict['PC'][:, 1], 'g--', lw=5, label='IMM-PC', alpha=0.7)
-    ax_traj.plot(est_dict['MIX'][:, 0], est_dict['MIX'][:, 1], 'b-', lw=5, label='IMM-Mix (Hybrid)', alpha=0.7)
+    ax_traj.plot(est_dict['MIX'][:, 0], est_dict['MIX'][:, 1], 'b-', lw=5, label='IMM-MIX', alpha=0.7)
     ax_traj.plot(true_pos[:, 0], true_pos[:, 1], 'k-', lw=1., label='Ground Truth')
-    ax_traj.set_title("Trajectory Tracking Performance", fontsize=14, fontweight='bold')
+    ax_traj.set_title("跟踪表现", fontsize=14, fontweight='bold')
     ax_traj.set_xlabel("X Position [m]"); ax_traj.set_ylabel("Y Position [m]")
     ax_traj.legend(); ax_traj.axis('equal'); ax_traj.grid(True, ls=':')
 

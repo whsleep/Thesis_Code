@@ -12,7 +12,8 @@ class TebplanSolver:
                  lookahead_dist=5.0,
                  # 权重参数
                  w_p=0.5, w_t=2.0, w_kin=50.0, w_r=5.0, w_obs=20.0, w_goal=1.0,w_acc=0.1,w_theta =0.1, 
-                 T_min=0.1, T_max=0.4):
+                 T_min=0.1, T_max=0.4,
+                 **kwargs):
         
         # --- 1. 基础配置 ---
         self.ref_path = ref_path

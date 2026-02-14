@@ -55,7 +55,7 @@ class MppiplanSolver:
         if self.ref_path.ndim == 2 and self.ref_path.shape[1] == 3:
             print(f"[INFO] ref_path shape is {self.ref_path.shape}. Auto-appending max_vel ({max_vel_abs} m/s) as reference velocity.")
             # 创建一列全为 max_vel_abs 的速度
-            v_ref = np.full((self.ref_path.shape[0], 1), max_vel_abs/2, dtype=np.float32)
+            v_ref = np.full((self.ref_path.shape[0], 1), max_vel_abs, dtype=np.float32)
             # 拼接到路径后面 -> [x, y, theta, v]
             self.ref_path = np.hstack([self.ref_path, v_ref])
         
