@@ -6,8 +6,8 @@ from pathlib import Path
 # ================= 路径配置 =================
 CURRENT_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = CURRENT_DIR.parent
-EXPERIMENT_ROOT = PROJECT_ROOT / "experiment_results_5"
-INPUT_FILE = EXPERIMENT_ROOT / "performance" / "metrics_summary_5.csv"
+EXPERIMENT_ROOT = PROJECT_ROOT / "experiment_results"
+INPUT_FILE = EXPERIMENT_ROOT / "performance" / "metrics_summary.csv"
 OUTPUT_DIR = EXPERIMENT_ROOT / "performance" / "figures"
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 # ===========================================
