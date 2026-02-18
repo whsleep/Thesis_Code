@@ -32,7 +32,7 @@ robot:
         alpha: 0.0
 
 obstacle:
-  - number: 10
+  - number: 5
     kinematics: {name: 'omni'}
     distribution: {name: 'random', range_low: [12, 12, -3.14], range_high: [42, 42, 3.14]}
     behavior: {name: 'rvo', wander: True, range_low: [10, 10, -3.14], range_high: [40, 40, 3.14], vxmax: 2, vymax: 2, factor: 5.0}
@@ -41,3 +41,19 @@ obstacle:
     shape:
       - {name: 'circle', radius: 1.5, random_shape: True}  
       - {name: 'polygon', random_shape: true, avg_radius_range: [0.5, 1.0], irregularity_range: [0, 0.4], spikeyness_range: [0, 0.4], num_vertices_range: [4, 6]}
+
+
+# obstacle:
+#   - number: 10
+#     distribution: {name: 'manual'}
+#     state: [[20, 34], [31, 38], [10, 20], [41, 25], [20, 13], [16, 26], [10.5, 24.5], [18, 20], [16, 26], [19, 26], [10, 30]]
+#     shape:
+#       - {name: 'circle', radius: 1.5}  # radius
+#       - {name: 'circle', radius: 1.0}  # radius
+
+#   - number: 1
+#     distribution: {name: 'manual'}
+#     shape:
+#       - {name: 'polygon', vertices: [[31, 24], [33, 24], [33, 28], [31, 28]]}
+#     state: 
+#       - [0, 0, 0] 

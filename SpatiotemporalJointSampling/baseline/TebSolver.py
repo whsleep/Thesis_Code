@@ -3,7 +3,7 @@ import numpy as np
 
 class TebplanSolver:
     """
-    自适应 TEB 规划器 (修复版)
+    自适应 TEB 规划器
     """
     def __init__(self, 
                  ref_path: np.ndarray,

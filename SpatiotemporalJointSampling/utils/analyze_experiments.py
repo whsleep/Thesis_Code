@@ -18,7 +18,7 @@ EXPERIMENT_ROOT = PROJECT_ROOT / "experiment_results"
 OUTPUT_DIR = EXPERIMENT_ROOT / "performance"
 
 # 定义要分析的算法
-ALGORITHMS = ['accdwa', 'dwa', 'mppi', 'teb', 'rda']
+ALGORITHMS = ['accdwa', 'dwa', 'mppi', 'teb', 'rda', 'mpccbf']
 # ===========================================
 
 def calculate_path_length(df):

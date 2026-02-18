@@ -6,8 +6,8 @@ from pathlib import Path
 # ================= 路径配置 =================
 CURRENT_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = CURRENT_DIR.parent
-EXPERIMENT_ROOT = PROJECT_ROOT / "experiment_results"
-INPUT_FILE = EXPERIMENT_ROOT / "performance" / "metrics_summary.csv"
+EXPERIMENT_ROOT = PROJECT_ROOT / "experiment_results_5"
+INPUT_FILE = EXPERIMENT_ROOT / "performance" / "metrics_summary_5.csv"
 OUTPUT_DIR = EXPERIMENT_ROOT / "performance" / "figures"
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 # ===========================================
@@ -18,7 +18,8 @@ COLORS = {
     'dwa': '#F4A261',      # 橙色  
     'mppi': '#2A9D8F',     # 青色
     'teb': '#264653',      # 深蓝
-    'rda': '#9B5DE5'       # 紫色
+    'rda': '#9B5DE5',      # 紫色
+    'mpccbf': '#0077B6'     # 蓝色
 }
 
 def load_data():
@@ -60,42 +61,163 @@ def robust_normalize(series, invert=False, target_range=(0.2, 0.9)):
 
 def plot_stacked_bar(df):
     """
-    图1: 比率堆叠柱状图 (Success/Collision/Timeout)
-    """
-    fig, ax = plt.subplots(figsize=(10, 6))
+    图1: 堆叠柱状图 - 展示各算法的成功率、碰撞率和超时率
     
+    设计思路:
+    - 使用堆叠柱状图直观展示三种结果的占比关系
+    - 绿色=成功, 红色=碰撞, 黄色=超时
+    - 添加数据标签和渐变效果增强可读性
+    """
+    # 创建画布，使用白色背景
+    fig, ax = plt.subplots(figsize=(12, 7), facecolor='white')
+    ax.set_facecolor('white')
+    
+    # 准备数据
     algorithms = df['Algorithm'].tolist()
     x_pos = np.arange(len(algorithms))
+    bar_width = 0.6  # 柱状图宽度
     
+    # 计算百分比（假设输入是0-1的小数）
     success = df['Success_Rate'] * 100
     collision = df['Collision_Rate'] * 100
     timeout = df['Timeout_Rate'] * 100
     
-    ax.bar(x_pos, success, label='Success', color='#2E7D32', alpha=0.9, edgecolor='white', linewidth=1)
-    ax.bar(x_pos, collision, bottom=success, label='Collision', color='#C62828', alpha=0.9, edgecolor='white', linewidth=1)
-    ax.bar(x_pos, timeout, bottom=success + collision, label='Timeout', color='#F9A825', alpha=0.9, edgecolor='white', linewidth=1)
+    # ==================== 绘制堆叠柱状图 ====================
+    # 第一层：成功率（绿色，底部）
+    bars1 = ax.bar(x_pos, success, 
+                   width=bar_width,
+                   label='Success', 
+                   color='#2E7D32',      # 深绿色，代表成功
+                   alpha=0.95, 
+                   edgecolor='white',     # 白色边框分隔
+                   linewidth=1.5,
+                   zorder=3)              # 确保在网格线上方
     
+    # 第二层：碰撞率（红色，中间）
+    bars2 = ax.bar(x_pos, collision, 
+                   width=bar_width,
+                   bottom=success,        # 堆叠在成功率之上
+                   label='Collision', 
+                   color='#C62828',      # 深红色，代表危险/碰撞
+                   alpha=0.95, 
+                   edgecolor='white',
+                   linewidth=1.5,
+                   zorder=3)
+    
+    # 第三层：超时率（黄色/橙色，顶部）
+    bars3 = ax.bar(x_pos, timeout, 
+                   width=bar_width,
+                   bottom=success + collision,  # 堆叠在前两层之上
+                   label='Timeout', 
+                   color='#F57F17',      # 深橙色，代表警告/超时
+                   alpha=0.95, 
+                   edgecolor='white',
+                   linewidth=1.5,
+                   zorder=3)
+    
+    # ==================== 添加数据标签 ====================
+    # 在柱子内部显示百分比，只有当占比足够大时才显示（避免重叠）
     for i, (s, c, t) in enumerate(zip(success, collision, timeout)):
-        if s > 5:
-            ax.text(i, s/2, f'{s:.1f}%', ha='center', va='center', fontsize=10, fontweight='bold', color='white')
-        if c > 5:
-            ax.text(i, s + c/2, f'{c:.1f}%', ha='center', va='center', fontsize=10, fontweight='bold', color='white')
-        if t > 5:
-            ax.text(i, s + c + t/2, f'{t:.1f}%', ha='center', va='center', fontsize=10, fontweight='bold', color='white')
+        # 成功率标签（在绿色区域中间）
+        if s > 8:  # 只有当占比>8%时才显示，避免拥挤
+            ax.text(i, s/2, f'{s:.1f}%', 
+                   ha='center', va='center', 
+                   fontsize=11, fontweight='bold', 
+                   color='white',  # 白色文字在深色背景上更清晰
+                   zorder=5)
+        
+        # 碰撞率标签（在红色区域中间）
+        if c > 8:
+            ax.text(i, s + c/2, f'{c:.1f}%', 
+                   ha='center', va='center', 
+                   fontsize=11, fontweight='bold', 
+                   color='white',
+                   zorder=5)
+        
+        # 超时率标签（在橙色区域中间）
+        if t > 8:
+            ax.text(i, s + c + t/2, f'{t:.1f}%', 
+                   ha='center', va='center', 
+                   fontsize=11, fontweight='bold', 
+                   color='white',
+                   zorder=5)
+        
+        # 对于很小的 segment，在柱子顶部显示数值
+        total = s + c + t
+        if s <= 8 and s > 0:
+            ax.text(i, s/2, f'{s:.0f}', ha='center', va='center', fontsize=9, color='white', alpha=0.9)
+        if c <= 8 and c > 0:
+            ax.text(i, s + c/2, f'{c:.0f}', ha='center', va='center', fontsize=9, color='white', alpha=0.9)
+        if t <= 8 and t > 0:
+            ax.text(i, s + c + t/2, f'{t:.0f}', ha='center', va='center', fontsize=9, color='white', alpha=0.9)
     
-    ax.set_ylabel('Percentage (%)', fontsize=12)
-    ax.set_title('Algorithm Performance: Success vs Failure Rates', fontsize=14, fontweight='bold', pad=20)
+    # ==================== 坐标轴和标题设置 ====================
+    # Y轴：百分比
+    ax.set_ylabel('Percentage (%)', fontsize=13, fontweight='bold', labelpad=10)
+    ax.set_ylim(0, 105)  # 稍微超过100，给顶部留空间
+    ax.set_yticks(np.arange(0, 101, 20))
+    ax.tick_params(axis='y', labelsize=11)
+    
+    # X轴：算法名称
+    ax.set_xlabel('Planning Algorithm', fontsize=13, fontweight='bold', labelpad=10)
     ax.set_xticks(x_pos)
-    ax.set_xticklabels([a.upper() for a in algorithms], fontsize=11, fontweight='bold')
-    ax.set_ylim(0, 100)
-    ax.legend(loc='upper right', framealpha=0.9)
-    ax.grid(axis='y', alpha=0.3, linestyle='--')
+    # 算法名大写显示，增加可读性
+    ax.set_xticklabels([a.upper() for a in algorithms], 
+                       fontsize=12, fontweight='bold', rotation=0)
+    ax.tick_params(axis='x', length=0)  # 隐藏X轴刻度线，更简洁
     
+    # 标题
+    ax.set_title('Algorithm Performance Overview: Success vs Failure Breakdown', 
+                 fontsize=15, fontweight='bold', pad=20, color='#1a1a1a')
+    
+    # 添加副标题说明
+    ax.text(0.5, 1.02, 'Higher success rate indicates better navigation reliability', 
+            transform=ax.transAxes, ha='center', va='bottom',
+            fontsize=10, style='italic', color='gray')
+    
+    # ==================== 图例和网格 ====================
+    # 图例：放在右上角，带半透明背景
+    legend = ax.legend(loc='upper right', 
+                      frameon=True, 
+                      fancybox=True,
+                      shadow=True,
+                      fontsize=11,
+                      framealpha=0.95)
+    legend.get_frame().set_facecolor('white')
+    legend.get_frame().set_edgecolor('gray')
+    
+    # 水平网格线：虚线，浅色，帮助读数
+    ax.grid(axis='y', alpha=0.4, linestyle='--', linewidth=0.8, color='gray', zorder=0)
+    ax.set_axisbelow(True)  # 网格线在柱子下方
+    
+    # 添加100%参考线（理想情况）
+    ax.axhline(y=100, color='green', linestyle='--', alpha=0.3, linewidth=1, zorder=1)
+    ax.text(len(algorithms)-0.5, 101, 'Target: 100%', ha='right', va='bottom', 
+            fontsize=9, color='green', alpha=0.6, style='italic')
+    
+    # ==================== 美化边框 ====================
+    # 移除顶部和右侧边框（spines），更现代
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+    ax.spines['left'].set_color('gray')
+    ax.spines['bottom'].set_color('gray')
+    ax.spines['left'].linewidth = 1.2
+    ax.spines['bottom'].linewidth = 1.2
+    
+    # ==================== 保存和输出 ====================
     plt.tight_layout()
-    plt.savefig(OUTPUT_DIR / 'stacked_bar_rates.png', dpi=300, bbox_inches='tight', facecolor='white')
-    plt.savefig(OUTPUT_DIR / 'stacked_bar_rates.pdf', bbox_inches='tight', facecolor='white')
-    print("✓ Saved: stacked_bar_rates.png/pdf")
-    plt.close()
+    
+    # 保存为PNG（高分辨率）和PDF（矢量图）
+    output_path_png = OUTPUT_DIR / 'stacked_bar_rates.png'
+    output_path_pdf = OUTPUT_DIR / 'stacked_bar_rates.pdf'
+    
+    plt.savefig(output_path_png, dpi=300, bbox_inches='tight', facecolor='white', edgecolor='none')
+    plt.savefig(output_path_pdf, bbox_inches='tight', facecolor='white', edgecolor='none')
+    
+    print(f"✓ Saved: {output_path_png.name}")
+    print(f"✓ Saved: {output_path_pdf.name}")
+    
+    plt.close(fig)  # 关闭图形，释放内存
 
 def plot_radar_chart(df):
     """

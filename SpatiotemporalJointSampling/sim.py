@@ -66,10 +66,11 @@ SOLVER_CONFIGS = {
         "params": {
             "delta_t": 0.1,
             "horizon_step_T": 20,
-            "v_max": 2.0,
-            "omega_max": 3.0,
+            "v_max": 5.0, "a_lin": 2.0,
+            "omega_max": 3.0, "a_ang": 3.0,
             "safe_distance": 1.5,
-            "gamma": 0.3,
+            "gamma": 0.3, "lookahead_dist": 5.0,
+            "cbf_soft_weight": 1000.0
         }
     },
     "rda": {
@@ -85,13 +86,13 @@ SOLVER_CONFIGS = {
 
 
 class SIM_ENV:
-    def __init__(self, world_file="robot_world.yaml", render=False, save_ani=True, solver_type="teb", log_path="logs" , timeout=100):
+    def __init__(self, world_file="robot_world.yaml", render=False, save_ani=False, solver_type="teb", log_path="logs" ,log_name=None, timeout=100):
         # 配置参数
         self.solver_type = solver_type
         self.timeout = timeout
         # 初始化记录
         self.logger = SimulationLogger(log_dir=log_path)
-        self.log_name = None
+        self.log_name = log_name
         # 初始化环境
         self.env = EnvBase(world_file, display=render, disable_all_plot=not render, save_ani=save_ani, log_level="ERROR" )
         # 环境参数

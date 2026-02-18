@@ -4,12 +4,12 @@ from sim import SIM_ENV
 
 def run_batch_experiments():
     # --- 1. 实验配置 ---
-    solvers_to_test = ["mppi", "teb"]   # 要测试的求解器列表
+    solvers_to_test = ["rda", "accdwa", "mpccbf", "mppi", "dwa", "teb"]   # 要测试的求解器列表
     # solvers_to_test = ["rda"]   # 要测试的求解器列表
     experiment_rounds = 100               # 每个求解器测试多少轮
     max_steps_per_episode = 1000        # 每轮最大步数
     render_mode = False                 # 是否显示画面
-    base_log_dir = "experiment_results" # 根日志目录
+    base_log_dir = "experiment_results_5" # 根日志目录
 
     # --- 2. 开始循环测试 ---
     print(f"🚀 开始批量实验: 求解器={solvers_to_test}, 每组次数={experiment_rounds}")
